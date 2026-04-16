@@ -1,0 +1,42 @@
+# 🔹 Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.sqlite3
+
+# 🔹 Virtual Environment
+venv/
+.env/
+
+# 🔹 Environment variables
+.env
+.env.*
+
+# 🔹 Logs
+*.log
+
+# 🔹 OS files
+.DS_Store
+Thumbs.db
+
+# 🔹 VS Code
+.vscode/
+
+# 🔹 Node (for frontend later)
+node_modules/
+dist/
+build/
+
+# 🔹 Docker
+*.pid
+
+# 🔹 Test cache
+.pytest_cache/
+
+# 🔹 Coverage
+.coverage
+htmlcov/
+
+# 🔹 Misc
+*.swp
