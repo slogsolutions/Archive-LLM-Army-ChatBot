@@ -32,3 +32,22 @@ root/
 Phase 1 tech stack
 LayerTechnologyWhyOCR pre-processOpenCV (Python)Deskew, denoise, binarise scanned docsOCR enginePaddleOCRBest Hindi+Roman accuracy on poor scansDoc classifierscikit-learn / lightweight transformerTag doc type offlineTask queueCelery + RedisParallel processing, job trackingObject storageMinIOS3-compatible, runs fully offlineMetadata DBPostgreSQLRBAC-scoped structured searchFull-text searchElasticsearchAny phrase search across OCR outputAuth directoryOpenLDAPCentral user/role managementAuth tokensJWT (python-jose)Stateless, per-request RBAC enforcementAPI serverFastAPIAsync, WebSocket, fastFrontendReact + ViteRole-aware UI, real-time updatesAudit logPostgreSQL (separate table)Every action logged with user + timestampReverse proxyNginxSingle entry point, static file serving
 ```
+
+# RBAC
+
+
+```
+SuperAdmin
+   ↓
+HeadQuarter (2STC, 3STC...)
+   ↓
+Unit (3TTR, 5TTR...)
+   ↓
+Branch (A, Q, G, M...)
+   ↓
+Users:
+   - Unit Admin
+   - Branch Officer
+   - Clerk
+   - Trainee
+```
