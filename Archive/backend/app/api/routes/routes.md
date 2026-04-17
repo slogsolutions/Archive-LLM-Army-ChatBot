@@ -17,3 +17,18 @@ Document (later)
 /documents/view
 /documents/search
 
+
+
+# FINAL PERMISSION TABLE
+
+```
+| Role        | Upload | Approve | Edit OCR | View        | Download |
+| ----------- | ------ | ------- | -------- | ----------- | -------- |
+| super_admin | ✅      | ✅       | ✅        | ✅           | ✅        |
+| hq_admin    | ❌      | ✅       | ❌        | ✅           | ✅        |
+| unit_admin  | ❌      | ✅       | ❌        | ✅           | ✅        |
+| officer     | ✅      | ✅       | ✅        | ✅           | ✅        |
+| clerk       | ✅      | ❌       | ✅        | ✅           | ✅        |
+| trainee     | ❌      | ❌       | ❌        | ✅ (limited) | ✅        |
+
+```

@@ -18,11 +18,21 @@ def paddle_ocr(file_path: str) -> str:
 
     result = ocr.ocr(file_path)
 
-    text = ""
-    for line in result[0]:
-        text += line[1][0] + "\n"
+    if not result:
+        return ""
 
-    return text
+    text = ""
+
+    for page in result:
+        if page:
+            for line in page:
+                if line and len(line) > 1:
+                    text += line[1][0] + "\n"
+
+    return text.strip()
+
+
+
 
 
 # =========================

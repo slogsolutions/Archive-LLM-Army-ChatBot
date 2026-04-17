@@ -6,9 +6,12 @@ import uuid
 from app.core.deps import get_current_user, get_db
 from app.models.document import Document
 from app.services.minio_service import upload_file, get_file_stream
-from app.core.rbac import check_access, get_filter
+from app.core.rbac import get_filter
 from app.services.search_service import search_documents
 from app.workers.ocr_tasks import process_document
+
+# ✅ RBAC Dependency
+from app.core.document_access import require_document_access
 
 router = APIRouter()
 
@@ -16,7 +19,6 @@ router = APIRouter()
 # =========================
 # UPLOAD DOCUMENT
 # =========================
-
 @router.post("/upload")
 def upload_document(
     file: UploadFile = File(...),
@@ -24,54 +26,61 @@ def upload_document(
     unit_id: int = None,
     branch_id: int = None,
     document_type_id: int = None,
-    min_visible_rank: int = 6,
+    min_visible_rank: int | None = None,
     user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
+
+    # 🔒 ONLY CLERK + OFFICER
+    if user.role not in ["officer", "clerk"]:
+        raise HTTPException(403, "Only clerk or officer can upload")
 
     if not file:
         raise HTTPException(400, "File required")
 
-    # 🔒 Scope validation
-    if user.hq_id and user.hq_id != hq_id:
+    # Normalize
+    # hq_id = int(hq_id) if hq_id is not None else None
+    # unit_id = int(unit_id) if unit_id is not None else None
+    # branch_id = int(branch_id) if branch_id is not None else None
+
+    hq_id = int(hq_id) if hq_id is not None else user.hq_id
+    unit_id = int(unit_id) if unit_id is not None else user.unit_id
+    branch_id = int(branch_id) if branch_id is not None else user.branch_id
+    document_type_id = int(document_type_id) if document_type_id is not None else None
+
+    # Scope validation
+    if user.hq_id and hq_id and user.hq_id != hq_id:
         raise HTTPException(403, "Wrong HQ")
 
-    if user.unit_id and user.unit_id != unit_id:
+    if user.unit_id and unit_id and user.unit_id != unit_id:
         raise HTTPException(403, "Wrong Unit")
 
-    if user.branch_id and user.branch_id != branch_id:
+    if user.branch_id and branch_id and user.branch_id != branch_id:
         raise HTTPException(403, "Wrong Branch")
 
-    # 🔒 Clerk safety
     if user.role == "clerk" and user.clerk_type not in ["junior", "senior"]:
-        raise HTTPException(400, "Invalid clerk setup")
+        raise HTTPException(400, "Invalid clerk setup neither junior nor senior")
 
     unique_filename = f"{uuid.uuid4()}_{file.filename}"
 
-    # get file size safely
     file.file.seek(0, 2)
     file_size = file.file.tell()
     file.file.seek(0)
 
+   # Upload to MinIO
     file_path = upload_file(file, unique_filename)
 
-    # =========================
-    # APPROVAL LOGIC
-    # =========================
+    # Approval logic
     is_approved = False
     approved_by = None
 
     if user.role == "officer":
         is_approved = True
         approved_by = user.id
-
     elif user.role == "clerk" and user.clerk_type == "senior":
         is_approved = True
         approved_by = user.id
 
-    # =========================
-    # SAVE
-    # =========================
     doc = Document(
         file_name=unique_filename,
         minio_path=file_path,
@@ -84,7 +93,7 @@ def upload_document(
         uploaded_by=user.id,
         is_approved=is_approved,
         approved_by=approved_by,
-        min_visible_rank=min_visible_rank,
+        min_visible_rank = min_visible_rank if min_visible_rank is not None else 6,
         status="uploaded"
     )
 
@@ -92,7 +101,8 @@ def upload_document(
     db.commit()
     db.refresh(doc)
 
-    # 🔥 OCR async
+ # Background Processing Celery
+
     process_document.delay(doc.id)
 
     return {
@@ -105,24 +115,15 @@ def upload_document(
 # =========================
 # APPROVE DOCUMENT
 # =========================
-
 @router.post("/approve/{doc_id}")
 def approve_document(
-    doc_id: int,
+    doc=Depends(require_document_access("approve")),
     user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
 
-    doc = db.get(Document, doc_id)
-
-    if not doc:
-        raise HTTPException(404)
-
     if doc.is_approved:
         return {"message": "Already approved"}
-
-    if not check_access(user, doc, "approve"):
-        raise HTTPException(403)
 
     doc.is_approved = True
     doc.approved_by = user.id
@@ -138,26 +139,14 @@ def approve_document(
 # =========================
 @router.get("/{doc_id}")
 def get_document(
-    doc_id: int,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    doc=Depends(require_document_access("view"))
 ):
-
-    doc = db.get(Document, doc_id)
-
-    if not doc:
-        raise HTTPException(404)
-
-    if not check_access(user, doc, "view"):
-        raise HTTPException(403)
-
     return doc
 
 
 # =========================
 # LIST DOCUMENTS
 # =========================
-
 @router.get("/")
 def list_documents(
     user=Depends(get_current_user),
@@ -167,12 +156,11 @@ def list_documents(
     filters = get_filter(user)
     query = db.query(Document)
 
-    # 🔥 FIX: safe filtering
     for key, value in filters.items():
         if value is not None:
             query = query.filter(getattr(Document, key) == value)
 
-    # 🔥 hide unapproved for low roles
+    # hide unapproved for trainee
     if user.role not in ["officer", "unit_admin", "hq_admin", "super_admin"]:
         query = query.filter(Document.is_approved == True)
 
@@ -182,25 +170,16 @@ def list_documents(
 # =========================
 # UPDATE OCR TEXT
 # =========================
-
 @router.put("/update-text/{doc_id}")
 def update_text(
-    doc_id: int,
     text: str,
+    doc=Depends(require_document_access("view")),
     user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
 
-    doc = db.get(Document, doc_id)
-
-    if not doc:
-        raise HTTPException(404)
-
-    if not check_access(user, doc, "view"):
-        raise HTTPException(403)
-
     if user.role not in ["clerk", "officer"]:
-        raise HTTPException(403)
+        raise HTTPException(403, "Only clerk/officer can edit")
 
     doc.corrected_text = text
     doc.status = "reviewed"
@@ -211,35 +190,12 @@ def update_text(
 
 
 # =========================
-# SEARCH API 
-# =========================
-
-@router.get("/search")
-def search(
-    query: str,
-    user=Depends(get_current_user)   #  SECURITY FIX
-):
-    return search_documents(query)
-
-
-# =========================
 # DOWNLOAD DOCUMENT
 # =========================
-
 @router.get("/download/{doc_id}")
 def download_document(
-    doc_id: int,
-    user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    doc=Depends(require_document_access("view"))
 ):
-
-    doc = db.get(Document, doc_id)
-
-    if not doc:
-        raise HTTPException(404, "Document not found")
-
-    if not check_access(user, doc, "view"):
-        raise HTTPException(403, "Access denied")
 
     file_stream = get_file_stream(doc.minio_path)
 
@@ -250,3 +206,11 @@ def download_document(
             "Content-Disposition": f'attachment; filename="{doc.file_name}"'
         }
     )
+
+
+# =========================
+# SEARCH
+# =========================
+@router.get("/search")
+def search(query: str, user=Depends(get_current_user)):
+    return search_documents(query)

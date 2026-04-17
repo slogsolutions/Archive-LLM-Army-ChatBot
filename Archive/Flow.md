@@ -180,13 +180,14 @@ Authorization: Bearer {{token}}
 
 ---
 
-## 🔹 CLERK
+## 🔹 CLERK (senior,junior)
 
 ```json
 {
   "email": "clerk@army.com",
   "password": "123",
   "role": "clerk",
+  "clerk_type":"senior|junior",
   "rank_level": 5,
   "hq_id": 1,
   "unit_id": 1,
@@ -439,4 +440,26 @@ Save text (status=processed)
 Elasticsearch index
     ↓
 status=indexed
+```
+# Uplaoding Flow
+
+```
+1. User uploads file
+    ↓
+2. File goes to MinIO (storage)
+    ↓
+3. Metadata saved in PostgreSQL
+    ↓
+4. Celery task triggered
+    ↓
+5. Worker downloads file from MinIO
+    ↓
+6. OCR runs (PaddleOCR)
+    ↓
+7. Text saved in DB
+    ↓
+8. Elasticsearch indexed
+    ↓
+9. Later → Vector DB
+
 ```
