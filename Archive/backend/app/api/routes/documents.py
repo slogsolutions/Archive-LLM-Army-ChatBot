@@ -5,6 +5,7 @@ from app.models.document import Document
 from app.services.minio_service import upload_file
 from app.core.rbac import check_access, get_filter
 import uuid
+from app.workers.ocr_tasks import process_document
 
 router = APIRouter()
 
@@ -93,6 +94,7 @@ def upload_document(
     db.add(doc)
     db.commit()
     db.refresh(doc)  # ✅ important to get ID
+    process_document.delay(doc.id)
 
 
     return {

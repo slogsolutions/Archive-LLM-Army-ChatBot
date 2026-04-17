@@ -405,3 +405,35 @@ Junior Clerk → needs approval
 Senior Clerk → direct upload
 
 ```
+
+# Document Status Flow
+
+```
+uploaded
+   ↓
+processing (Celery starts)
+   ↓
+processed (OCR done)
+   ↓
+reviewed (clerk edits)
+   ↓
+indexed (Elastic stored)
+```
+
+# Document Status Flow (Deep)
+
+```
+Upload →
+    MinIO (file stored)
+    PostgreSQL (metadata saved, status="uploaded")
+    ↓
+    Redis Queue (send OCR job)
+    ↓
+Worker (Celery)
+    ↓
+OCR → save text → status="processed"
+    ↓
+Clerk edits → status="reviewed"
+    ↓
+Elasticsearch indexing → status="indexed"
+```
