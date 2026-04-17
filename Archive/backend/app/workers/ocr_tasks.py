@@ -4,11 +4,12 @@ from app.models.document import Document
 from app.services.minio_service import download_file
 from app.services.ocr_service import run_ocr
 from app.services.search_service import index_document
+
 import os
 
 @celery_app.task
 def process_document(doc_id: int):
-
+    print(doc_id)
     print(f"[START] Processing doc_id={doc_id}")
 
     db = SessionLocal()
