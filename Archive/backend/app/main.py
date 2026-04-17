@@ -12,6 +12,8 @@ from app.models.branch import Branch
 
 # ROUTES
 from app.api.routes import auth, users, hq, unit, branch
+from app.api.routes import documents
+
 
 app = FastAPI(title="Army Archive System")
 
@@ -34,7 +36,7 @@ app.include_router(users.router, prefix="/users", tags=["users"])
 app.include_router(hq.router, prefix="/hq", tags=["hq"])
 app.include_router(unit.router, prefix="/unit", tags=["unit"])
 app.include_router(branch.router, prefix="/branch", tags=["branch"])
-
+app.include_router(documents.router, prefix="/documents", tags=["documents"])
 
 # =========================
 # HEALTH CHECKS

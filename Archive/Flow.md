@@ -387,3 +387,21 @@ Base.metadata.create_all(bind=engine)
 # 🚀 NEXT STEP
 
 👉 Document Upload + MinIO Integration
+
+```
+What you want to support
+
+You have 3 concepts mixed together:
+
+1. Approval flow
+Clerk uploads
+Officer approves
+
+2. Visibility control (rank-based)
+Who can SEE document
+
+3. Clerk types
+Junior Clerk → needs approval
+Senior Clerk → direct upload
+
+```

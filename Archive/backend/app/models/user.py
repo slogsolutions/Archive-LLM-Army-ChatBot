@@ -15,5 +15,6 @@ class User(Base):
     hq_id = Column(Integer, nullable=True)
     unit_id = Column(Integer, nullable=True)
     branch_id = Column(Integer, nullable=True)
+    clerk_type = Column(String, nullable=True)  # values: "junior", "senior"
 
     task_category = Column(String, nullable=True)
