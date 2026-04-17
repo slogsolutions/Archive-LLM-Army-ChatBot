@@ -423,17 +423,20 @@ indexed (Elastic stored)
 # Document Status Flow (Deep)
 
 ```
-Upload →
-    MinIO (file stored)
-    PostgreSQL (metadata saved, status="uploaded")
+UPLOAD →
+    MinIO
+    DB (status=uploaded)
     ↓
-    Redis Queue (send OCR job)
+Celery Task →
+    status=processing
     ↓
-Worker (Celery)
+Download from MinIO
     ↓
-OCR → save text → status="processed"
+PaddleOCR
     ↓
-Clerk edits → status="reviewed"
+Save text (status=processed)
     ↓
-Elasticsearch indexing → status="indexed"
+Elasticsearch index
+    ↓
+status=indexed
 ```

@@ -8,6 +8,20 @@ def index_document(doc_id, text):
         index="documents",
         id=doc_id,
         body={
-            "text": text
+            "content": text
         }
     )
+
+
+def search_documents(query: str):
+    res = es.search(
+        index="documents",
+        body={
+            "query": {
+                "match": {
+                    "content": query
+                }
+            }
+        }
+    )
+    return res["hits"]["hits"]

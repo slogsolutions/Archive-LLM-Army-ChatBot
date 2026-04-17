@@ -9,8 +9,8 @@ class Document(Base):
     id = Column(Integer, primary_key=True)
 
     # FILE INFO
-    file_name = Column(String)
-    minio_path = Column(String)
+    file_name = Column(String, nullable=False)
+    minio_path = Column(String, nullable=False)
     file_size = Column(Integer, nullable=True)
     file_type = Column(String, nullable=True)
 
@@ -45,4 +45,5 @@ class Document(Base):
     __table_args__ = (
         Index("idx_branch", "branch_id"),
         Index("idx_type", "document_type_id"),
+        Index("idx_status", "status"),  # 🔥 added
     )

@@ -54,4 +54,5 @@ def test():
 # =========================
 # CREATE TABLES (DEV ONLY)
 # =========================
+Base.metadata.drop_all(bind=engine)
 Base.metadata.create_all(bind=engine)

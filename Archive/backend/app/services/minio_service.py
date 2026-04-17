@@ -15,13 +15,15 @@ client = Minio(
 )
 
 
+# =========================
+# UPLOAD FILE
+# =========================
 def upload_file(file: UploadFile, file_name: str):
 
     # Create bucket if not exists
     if not client.bucket_exists(MINIO_BUCKET):
         client.make_bucket(MINIO_BUCKET)
 
-    # 🔥 Optional: structured path
     object_name = f"documents/{file_name}"
 
     client.put_object(
@@ -34,3 +36,30 @@ def upload_file(file: UploadFile, file_name: str):
     )
 
     return f"{MINIO_BUCKET}/{object_name}"
+
+
+# =========================
+# DOWNLOAD FILE (TO LOCAL)
+# =========================
+def download_file(object_path: str, local_path: str):
+
+    object_name = object_path.replace(f"{MINIO_BUCKET}/", "")
+
+    client.fget_object(
+        bucket_name=MINIO_BUCKET,
+        object_name=object_name,
+        file_path=local_path
+    )
+
+
+# =========================
+# STREAM FILE (FOR API)
+# =========================
+def get_file_stream(object_path: str):
+
+    object_name = object_path.replace(f"{MINIO_BUCKET}/", "")
+
+    return client.get_object(
+        bucket_name=MINIO_BUCKET,
+        object_name=object_name
+    )
