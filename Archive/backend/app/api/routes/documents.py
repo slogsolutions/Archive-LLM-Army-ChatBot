@@ -30,6 +30,7 @@ def upload_document(
     # Optional (keep if needed)
     hq_id: int = None,
     unit_id: int = None,
+    branch_id: int = None,
     min_visible_rank: int | None = None,
 
     user=Depends(get_current_user),
@@ -50,6 +51,7 @@ def upload_document(
     # Normalize IDs (optional)
     hq_id = int(hq_id) if hq_id is not None else user.hq_id
     unit_id = int(unit_id) if unit_id is not None else user.unit_id
+    branch_id = int(branch_id) if branch_id is not None else user.branch_id
 
     # Scope validation (keep your logic)
     if user.hq_id and hq_id and user.hq_id != hq_id:
@@ -96,6 +98,7 @@ def upload_document(
 
         hq_id=hq_id,
         unit_id=unit_id,
+        branch_id=branch_id,
 
         uploaded_by=user.id,
         is_approved=is_approved,
@@ -109,7 +112,11 @@ def upload_document(
     db.refresh(doc)
 
     # Background OCR
-    process_document.delay(doc.id)
+    try:
+        process_document.delay(doc.id)
+    except Exception:
+        # Keep upload usable in local development even when the worker/broker is down.
+        pass
 
     return {
         "doc_id": doc.id,
@@ -117,6 +124,14 @@ def upload_document(
         "path": file_path,
         "approved": is_approved
     }
+
+
+# =========================
+# SEARCH
+# =========================
+@router.get("/search")
+def search(query: str, user=Depends(get_current_user)):
+    return search_documents(query)
 
 
 
@@ -217,9 +232,3 @@ def download_document(
     )
 
 
-# =========================
-# SEARCH
-# =========================
-@router.get("/search")
-def search(query: str, user=Depends(get_current_user)):
-    return search_documents(query)
