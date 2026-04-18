@@ -3,7 +3,7 @@ from app.core.database import SessionLocal
 from app.models.document import Document
 from app.services.minio_service import download_file
 from app.services.ocr_service import run_ocr
-from app.services.search_service import index_document
+from app.services.search_service import index_chunk
 
 import os
 
@@ -42,7 +42,7 @@ def process_document(doc_id: int):
         print("[STEP 4] OCR text saved")
 
         # 5. INDEX
-        index_document(doc.id, text)
+        index_chunk(doc.id, text)
         doc.status = "indexed"
         db.commit()
         print("[STEP 5] Indexed in Elasticsearch")

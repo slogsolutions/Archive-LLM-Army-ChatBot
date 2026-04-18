@@ -11,6 +11,7 @@ def run_ocr(file_path: str) -> str:
 # =========================
 # PADDLE IMPLEMENTATION
 # =========================
+
 def paddle_ocr(file_path: str) -> str:
     from paddleocr import PaddleOCR
 
@@ -21,18 +22,17 @@ def paddle_ocr(file_path: str) -> str:
     if not result:
         return ""
 
-    text = ""
+    text_lines = []
 
     for page in result:
         if page:
             for line in page:
                 if line and len(line) > 1:
-                    text += line[1][0] + "\n"
+                    txt = line[1][0].strip()
+                    if txt:
+                        text_lines.append(txt)
 
-    return text.strip()
-
-
-
+    return "\n".join(text_lines)
 
 
 # =========================

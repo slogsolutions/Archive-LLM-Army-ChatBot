@@ -22,11 +22,16 @@ router = APIRouter()
 @router.post("/upload")
 def upload_document(
     file: UploadFile = File(...),
+
+    # ✅ MAKE THESE MANDATORY
+    branch: str = None,
+    document_type: str = None,
+
+    # Optional (keep if needed)
     hq_id: int = None,
     unit_id: int = None,
-    branch_id: int = None,
-    document_type_id: int = None,
     min_visible_rank: int | None = None,
+
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -38,37 +43,34 @@ def upload_document(
     if not file:
         raise HTTPException(400, "File required")
 
-    # Normalize
-    # hq_id = int(hq_id) if hq_id is not None else None
-    # unit_id = int(unit_id) if unit_id is not None else None
-    # branch_id = int(branch_id) if branch_id is not None else None
+    # ✅ VALIDATE REQUIRED FIELDS
+    if not branch or not document_type:
+        raise HTTPException(400, "Branch and Document Type are required")
 
+    # Normalize IDs (optional)
     hq_id = int(hq_id) if hq_id is not None else user.hq_id
     unit_id = int(unit_id) if unit_id is not None else user.unit_id
-    branch_id = int(branch_id) if branch_id is not None else user.branch_id
-    document_type_id = int(document_type_id) if document_type_id is not None else None
 
-    # Scope validation
+    # Scope validation (keep your logic)
     if user.hq_id and hq_id and user.hq_id != hq_id:
         raise HTTPException(403, "Wrong HQ")
 
     if user.unit_id and unit_id and user.unit_id != unit_id:
         raise HTTPException(403, "Wrong Unit")
 
-    if user.branch_id and branch_id and user.branch_id != branch_id:
-        raise HTTPException(403, "Wrong Branch")
-
     if user.role == "clerk" and user.clerk_type not in ["junior", "senior"]:
-        raise HTTPException(400, "Invalid clerk setup neither junior nor senior")
+        raise HTTPException(400, "Invalid clerk setup")
 
+    # Unique filename
     unique_filename = f"{uuid.uuid4()}_{file.filename}"
 
+    # file size
     file.file.seek(0, 2)
     file_size = file.file.tell()
     file.file.seek(0)
 
-   # Upload to MinIO
-    file_path = upload_file(file, unique_filename)
+    # ✅ Upload to MinIO with structured path
+    file_path = upload_file(file, unique_filename, branch, document_type)
 
     # Approval logic
     is_approved = False
@@ -81,19 +83,24 @@ def upload_document(
         is_approved = True
         approved_by = user.id
 
+    # ✅ SAVE METADATA
     doc = Document(
         file_name=unique_filename,
         minio_path=file_path,
         file_size=file_size,
         file_type=file.content_type,
+
+        # ✅ NEW METADATA
+        branch_name=branch,
+        document_type_name=document_type,
+
         hq_id=hq_id,
         unit_id=unit_id,
-        branch_id=branch_id,
-        document_type_id=document_type_id,
+
         uploaded_by=user.id,
         is_approved=is_approved,
         approved_by=approved_by,
-        min_visible_rank = min_visible_rank if min_visible_rank is not None else 6,
+        min_visible_rank=min_visible_rank if min_visible_rank is not None else 6,
         status="uploaded"
     )
 
@@ -101,15 +108,17 @@ def upload_document(
     db.commit()
     db.refresh(doc)
 
- # Background Processing Celery
-
+    # Background OCR
     process_document.delay(doc.id)
 
     return {
         "doc_id": doc.id,
         "file_name": unique_filename,
+        "path": file_path,
         "approved": is_approved
     }
+
+
 
 
 # =========================

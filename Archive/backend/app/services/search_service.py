@@ -1,17 +1,23 @@
+#Elastic Search 
+
 from elasticsearch import Elasticsearch
 
 es = Elasticsearch("http://localhost:9200")
 
 
-def index_document(doc_id, text):
+
+def index_chunk(doc_id, chunk_text, embedding, branch, doc_type, year):
     es.index(
         index="documents",
-        id=doc_id,
         body={
-            "content": text
+            "text": chunk_text,
+            "embedding": embedding,
+            "document_id": doc_id,
+            "branch": branch,
+            "document_type": doc_type,
+            "year": year
         }
     )
-
 
 def search_documents(query: str):
     res = es.search(
