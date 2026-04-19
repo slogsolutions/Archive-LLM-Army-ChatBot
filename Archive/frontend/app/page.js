@@ -6,8 +6,8 @@ import { api } from './lib/api';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [email, setEmail] = useState('super@army.com');
-  const [password, setPassword] = useState('123');
+  const [armyNumber, setArmyNumber] = useState('');
+  const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
@@ -17,7 +17,7 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      await api.login(email, password);
+      await api.login(armyNumber, password);
       router.push('/dashboard');
     } catch (err) {
       setError(err.message || 'Login failed');
@@ -50,14 +50,14 @@ export default function LoginPage() {
 
         <form onSubmit={handleLogin}>
           <div className="form-group">
-            <label className="form-label">Email Address</label>
+            <label className="form-label">Army Number</label>
             <input
-              type="email"
+              type="text"
               className="form-input"
-              placeholder="super@army.com"
+              placeholder="ARMY-SUPER-001"
               required
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              value={armyNumber}
+              onChange={(event) => setArmyNumber(event.target.value)}
             />
           </div>
           <div className="form-group">

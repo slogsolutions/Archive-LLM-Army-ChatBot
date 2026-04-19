@@ -7,6 +7,7 @@ const navItems = [
   { href: '/dashboard', icon: 'dashboard',     label: 'Dashboard' },
   { href: '/archive',   icon: 'inventory_2',   label: 'Archive' },
   { href: '/uploads',   icon: 'cloud_upload',  label: 'Uploads' },
+  { href: '/hierarchy', icon: 'account_tree',  label: 'Hierarchy' },
   { href: '/users',     icon: 'group',         label: 'User Management' },
 ];
 
@@ -19,7 +20,7 @@ export default function Sidebar({ user }) {
     router.push('/');
   };
 
-  const initial = user?.email?.charAt(0)?.toUpperCase() || 'A';
+  const initial = user?.name?.charAt(0)?.toUpperCase() || user?.army_number?.charAt(0)?.toUpperCase() || 'A';
 
   return (
     <aside className="sidebar">
@@ -49,7 +50,8 @@ export default function Sidebar({ user }) {
       <div className="sidebar-footer">
         <div className="sidebar-avatar">{initial}</div>
         <div>
-          <div className="sidebar-user-name">{user?.email || 'Loading...'}</div>
+          <div className="sidebar-user-name">{user?.name || 'Loading...'}</div>
+          <div className="sidebar-user-number">{user?.army_number || ''}</div>
           <div className="sidebar-user-role">{formatRole(user?.role || 'User')}</div>
         </div>
         <button className="sidebar-logout" onClick={handleLogout} title="Sign out">

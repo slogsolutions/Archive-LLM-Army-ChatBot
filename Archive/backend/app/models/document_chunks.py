@@ -16,7 +16,7 @@ class DocumentChunk(Base):
     page = Column(Integer, nullable=True)
 
     # optional (for future DB vector)
-    embedding = Column(Text, nullable=True)
+    # embedding = Column(Text, nullable=True)
 
     __table_args__ = (
         Index("idx_doc", "document_id"),

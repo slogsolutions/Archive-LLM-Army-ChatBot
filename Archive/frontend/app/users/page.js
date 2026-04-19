@@ -5,7 +5,8 @@ import AppLayout from '../components/AppLayout';
 import { api, formatRole } from '../lib/api';
 
 const emptyUser = {
-  email: '',
+  army_number: '',
+  name: '',
   password: '123',
   role: 'trainee',
   rank_level: 6,
@@ -16,30 +17,37 @@ const emptyUser = {
   task_category: '',
 };
 
-const emptyStructure = {
-  hqName: '',
-  unitName: '',
-  unitHqId: '',
-  branchName: '',
-  branchDescription: '',
-  branchUnitId: '',
-};
-
 export default function UserManagementPage() {
   const [users, setUsers] = useState([]);
+  const [hqs, setHqs] = useState([]);
+  const [units, setUnits] = useState([]);
+  const [branches, setBranches] = useState([]);
   const [userForm, setUserForm] = useState(emptyUser);
-  const [structureForm, setStructureForm] = useState(emptyStructure);
   const [editingId, setEditingId] = useState(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [isLoading, setIsLoading] = useState(true);
 
-  const loadUsers = async () => {
+  const selectedHqId = Number(userForm.hq_id) || null;
+  const selectedUnitId = Number(userForm.unit_id) || null;
+  const filteredUnits = selectedHqId ? units.filter((unit) => unit.hq_id === selectedHqId) : units;
+  const filteredBranches = selectedUnitId ? branches.filter((branch) => branch.unit_id === selectedUnitId) : branches;
+
+  const loadData = async () => {
     setError('');
 
     try {
-      const data = await api.listUsers();
-      setUsers(Array.isArray(data) ? data : []);
+      const [userList, hqList, unitList, branchList] = await Promise.all([
+        api.listUsers(),
+        api.listHq(),
+        api.listUnits(),
+        api.listBranches(),
+      ]);
+
+      setUsers(Array.isArray(userList) ? userList : []);
+      setHqs(Array.isArray(hqList) ? hqList : []);
+      setUnits(Array.isArray(unitList) ? unitList : []);
+      setBranches(Array.isArray(branchList) ? branchList : []);
     } catch (err) {
       setError(err.message || 'Unable to load users');
     } finally {
@@ -48,7 +56,7 @@ export default function UserManagementPage() {
   };
 
   useEffect(() => {
-    loadUsers();
+    loadData();
   }, []);
 
   const stats = useMemo(() => ({
@@ -58,8 +66,25 @@ export default function UserManagementPage() {
     trainees: users.filter((user) => user.role === 'trainee').length,
   }), [users]);
 
+  const findHqName = (id) => hqs.find((hq) => hq.id === id)?.name || '-';
+  const findUnitName = (id) => units.find((unit) => unit.id === id)?.name || '-';
+  const findBranchName = (id) => branches.find((branch) => branch.id === id)?.name || '-';
+
   const updateUserForm = (key, value) => {
-    setUserForm((current) => ({ ...current, [key]: value }));
+    setUserForm((current) => {
+      const next = { ...current, [key]: value };
+
+      if (key === 'hq_id') {
+        next.unit_id = '';
+        next.branch_id = '';
+      }
+
+      if (key === 'unit_id') {
+        next.branch_id = '';
+      }
+
+      return next;
+    });
   };
 
   const submitUser = async (event) => {
@@ -78,7 +103,7 @@ export default function UserManagementPage() {
 
       setUserForm(emptyUser);
       setEditingId(null);
-      await loadUsers();
+      await loadData();
     } catch (err) {
       setError(err.message || 'User save failed');
     }
@@ -87,7 +112,8 @@ export default function UserManagementPage() {
   const editUser = (user) => {
     setEditingId(user.id);
     setUserForm({
-      email: user.email || '',
+      army_number: user.army_number || '',
+      name: user.name || '',
       password: '',
       role: user.role || 'trainee',
       rank_level: user.rank_level || 6,
@@ -106,42 +132,16 @@ export default function UserManagementPage() {
     try {
       await api.deleteUser(id);
       setMessage('User deleted');
-      await loadUsers();
+      await loadData();
     } catch (err) {
       setError(err.message || 'Delete failed');
     }
   };
 
-  const createStructure = async (event) => {
-    event.preventDefault();
-    setError('');
-    setMessage('');
-
-    try {
-      if (structureForm.hqName) {
-        await api.createHq({ name: structureForm.hqName });
-      }
-      if (structureForm.unitName) {
-        await api.createUnit({ name: structureForm.unitName, hq_id: Number(structureForm.unitHqId) });
-      }
-      if (structureForm.branchName) {
-        await api.createBranch({
-          name: structureForm.branchName,
-          description: structureForm.branchDescription,
-          unit_id: Number(structureForm.branchUnitId),
-        });
-      }
-      setStructureForm(emptyStructure);
-      setMessage('Hierarchy item created');
-    } catch (err) {
-      setError(err.message || 'Hierarchy save failed');
-    }
-  };
-
   return (
     <AppLayout
-      title="Manage System Access"
-      subtitle="Create HQs, units, branches, and users with backend rank and scope checks."
+      title="User Management"
+      subtitle="Manage Army personnel access with role, rank, and hierarchy-linked scope."
     >
       {error && <div className="form-error mb-4">{error}</div>}
       {message && <div className="form-success mb-4">{message}</div>}
@@ -154,13 +154,13 @@ export default function UserManagementPage() {
       </div>
 
       <div className="two-col mt-4">
-        <div className="table-wrapper">
+        <div className="table-wrapper animated-panel">
           <table className="table">
             <thead>
               <tr>
-                <th>User</th>
+                <th>Personnel</th>
                 <th>Role</th>
-                <th>Scope</th>
+                <th>Hierarchy Scope</th>
                 <th>Rank</th>
                 <th>Actions</th>
               </tr>
@@ -170,15 +170,17 @@ export default function UserManagementPage() {
                 <tr key={user.id}>
                   <td>
                     <div className="flex items-center gap-3">
-                      <div className="avatar avatar-green">{user.email?.charAt(0)?.toUpperCase() || 'U'}</div>
+                      <div className="avatar avatar-green">{user.name?.charAt(0)?.toUpperCase() || 'U'}</div>
                       <div>
-                        <strong>{user.email}</strong>
-                        <div className="text-xs text-muted">ID {user.id}</div>
+                        <strong>{user.name || 'Unnamed User'}</strong>
+                        <div className="text-xs text-muted">{user.army_number}</div>
                       </div>
                     </div>
                   </td>
                   <td><span className="badge badge-admin">{formatRole(user.role)}</span></td>
-                  <td className="text-muted">HQ {user.hq_id || '-'} / Unit {user.unit_id || '-'} / Branch {user.branch_id || '-'}</td>
+                  <td className="text-muted">
+                    {findHqName(user.hq_id)} / {findUnitName(user.unit_id)} / {findBranchName(user.branch_id)}
+                  </td>
                   <td>{user.rank_level}</td>
                   <td>
                     <div className="flex gap-2">
@@ -198,104 +200,87 @@ export default function UserManagementPage() {
           )}
         </div>
 
-        <div className="flex-col gap-6">
-          <div className="card">
-            <h2 className="section-title">{editingId ? 'Edit User' : 'Create User'}</h2>
-            <form onSubmit={submitUser}>
+        <div className="card animated-panel">
+          <h2 className="section-title">{editingId ? 'Edit Personnel' : 'Register Personnel'}</h2>
+          <form onSubmit={submitUser}>
+            <div className="form-row">
               <div className="form-group">
-                <label className="form-label">Email</label>
-                <input type="email" className="form-input" value={userForm.email} onChange={(event) => updateUserForm('email', event.target.value)} required />
+                <label className="form-label">Army Number</label>
+                <input className="form-input" value={userForm.army_number} onChange={(event) => updateUserForm('army_number', event.target.value)} placeholder="IC-45821" required />
               </div>
               <div className="form-group">
-                <label className="form-label">Password</label>
-                <input type="password" className="form-input" value={userForm.password} onChange={(event) => updateUserForm('password', event.target.value)} placeholder={editingId ? 'Leave blank to keep current' : 'Password'} required={!editingId} />
+                <label className="form-label">Name</label>
+                <input className="form-input" value={userForm.name} onChange={(event) => updateUserForm('name', event.target.value)} placeholder="Name" required />
               </div>
-              <div className="form-row">
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Password</label>
+              <input type="password" className="form-input" value={userForm.password} onChange={(event) => updateUserForm('password', event.target.value)} placeholder={editingId ? 'Leave blank to keep current' : 'Password'} required={!editingId} />
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Role</label>
+                <select className="form-select" value={userForm.role} onChange={(event) => updateUserForm('role', event.target.value)}>
+                  <option value="hq_admin">HQ Admin</option>
+                  <option value="unit_admin">Unit Admin</option>
+                  <option value="officer">Officer</option>
+                  <option value="clerk">Clerk</option>
+                  <option value="trainee">Trainee</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Rank Level</label>
+                <input type="number" min="1" max="6" className="form-input" value={userForm.rank_level} onChange={(event) => updateUserForm('rank_level', event.target.value)} required />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="form-label">Headquarter</label>
+              <select className="form-select" value={userForm.hq_id} onChange={(event) => updateUserForm('hq_id', event.target.value)}>
+                <option value="">Select HQ...</option>
+                {hqs.map((hq) => <option key={hq.id} value={hq.id}>{hq.name}</option>)}
+              </select>
+            </div>
+
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">Unit</label>
+                <select className="form-select" value={userForm.unit_id} onChange={(event) => updateUserForm('unit_id', event.target.value)} disabled={!userForm.hq_id}>
+                  <option value="">Select Unit...</option>
+                  {filteredUnits.map((unit) => <option key={unit.id} value={unit.id}>{unit.name}</option>)}
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">Branch</label>
+                <select className="form-select" value={userForm.branch_id} onChange={(event) => updateUserForm('branch_id', event.target.value)} disabled={!userForm.unit_id}>
+                  <option value="">Select Branch...</option>
+                  {filteredBranches.map((branch) => <option key={branch.id} value={branch.id}>{branch.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {userForm.role === 'clerk' && (
+              <>
                 <div className="form-group">
-                  <label className="form-label">Role</label>
-                  <select className="form-select" value={userForm.role} onChange={(event) => updateUserForm('role', event.target.value)}>
-                    <option value="hq_admin">HQ Admin</option>
-                    <option value="unit_admin">Unit Admin</option>
-                    <option value="officer">Officer</option>
-                    <option value="clerk">Clerk</option>
-                    <option value="trainee">Trainee</option>
+                  <label className="form-label">Clerk Type</label>
+                  <select className="form-select" value={userForm.clerk_type} onChange={(event) => updateUserForm('clerk_type', event.target.value)}>
+                    <option value="junior">Junior</option>
+                    <option value="senior">Senior</option>
                   </select>
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Rank Level</label>
-                  <input type="number" min="1" max="6" className="form-input" value={userForm.rank_level} onChange={(event) => updateUserForm('rank_level', event.target.value)} required />
+                  <label className="form-label">Task Category</label>
+                  <input className="form-input" value={userForm.task_category} onChange={(event) => updateUserForm('task_category', event.target.value)} placeholder="ration, training..." />
                 </div>
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">HQ ID</label>
-                  <input type="number" className="form-input" value={userForm.hq_id} onChange={(event) => updateUserForm('hq_id', event.target.value)} />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Unit ID</label>
-                  <input type="number" className="form-input" value={userForm.unit_id} onChange={(event) => updateUserForm('unit_id', event.target.value)} />
-                </div>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Branch ID</label>
-                <input type="number" className="form-input" value={userForm.branch_id} onChange={(event) => updateUserForm('branch_id', event.target.value)} />
-              </div>
-              {userForm.role === 'clerk' && (
-                <>
-                  <div className="form-group">
-                    <label className="form-label">Clerk Type</label>
-                    <select className="form-select" value={userForm.clerk_type} onChange={(event) => updateUserForm('clerk_type', event.target.value)}>
-                      <option value="junior">Junior</option>
-                      <option value="senior">Senior</option>
-                    </select>
-                  </div>
-                  <div className="form-group">
-                    <label className="form-label">Task Category</label>
-                    <input className="form-input" value={userForm.task_category} onChange={(event) => updateUserForm('task_category', event.target.value)} placeholder="ration, training..." />
-                  </div>
-                </>
-              )}
-              <div className="flex justify-end gap-3">
-                <button type="button" className="btn btn-secondary" onClick={() => { setEditingId(null); setUserForm(emptyUser); }}>Clear</button>
-                <button type="submit" className="btn btn-primary">{editingId ? 'Update User' : 'Create User'}</button>
-              </div>
-            </form>
-          </div>
-
-          <div className="card">
-            <h2 className="section-title">Create Hierarchy</h2>
-            <form onSubmit={createStructure}>
-              <div className="form-group">
-                <label className="form-label">HQ Name</label>
-                <input className="form-input" value={structureForm.hqName} onChange={(event) => setStructureForm((current) => ({ ...current, hqName: event.target.value }))} placeholder="2STC" />
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Unit Name</label>
-                  <input className="form-input" value={structureForm.unitName} onChange={(event) => setStructureForm((current) => ({ ...current, unitName: event.target.value }))} placeholder="3TTR" />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">HQ ID</label>
-                  <input type="number" className="form-input" value={structureForm.unitHqId} onChange={(event) => setStructureForm((current) => ({ ...current, unitHqId: event.target.value }))} />
-                </div>
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">Branch Name</label>
-                  <input className="form-input" value={structureForm.branchName} onChange={(event) => setStructureForm((current) => ({ ...current, branchName: event.target.value }))} placeholder="A" />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Unit ID</label>
-                  <input type="number" className="form-input" value={structureForm.branchUnitId} onChange={(event) => setStructureForm((current) => ({ ...current, branchUnitId: event.target.value }))} />
-                </div>
-              </div>
-              <div className="form-group">
-                <label className="form-label">Branch Description</label>
-                <input className="form-input" value={structureForm.branchDescription} onChange={(event) => setStructureForm((current) => ({ ...current, branchDescription: event.target.value }))} placeholder="Admin Branch" />
-              </div>
-              <button type="submit" className="btn btn-primary w-full" style={{ justifyContent: 'center' }}>Create Hierarchy Items</button>
-            </form>
-          </div>
+              </>
+            )}
+            <div className="flex justify-end gap-3">
+              <button type="button" className="btn btn-secondary" onClick={() => { setEditingId(null); setUserForm(emptyUser); }}>Clear</button>
+              <button type="submit" className="btn btn-primary">{editingId ? 'Update User' : 'Create User'}</button>
+            </div>
+          </form>
         </div>
       </div>
     </AppLayout>

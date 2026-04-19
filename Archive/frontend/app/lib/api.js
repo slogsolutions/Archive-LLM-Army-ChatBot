@@ -71,11 +71,11 @@ async function request(path, options = {}) {
   return response;
 }
 
-async function login(email, password) {
+async function login(armyNumber, password) {
   const auth = await request('/auth/login', {
     method: 'POST',
     token: null,
-    body: JSON.stringify({ email, password }),
+    body: JSON.stringify({ army_number: armyNumber, password }),
   });
 
   const user = await request('/auth/me', { token: auth.access_token });
@@ -85,7 +85,8 @@ async function login(email, password) {
 
 function normalizeUser(user, { includeBlankPassword = true } = {}) {
   const payload = {
-    email: user.email,
+    army_number: user.army_number,
+    name: user.name,
     role: user.role,
     rank_level: Number(user.rank_level),
     hq_id: user.hq_id ? Number(user.hq_id) : null,
@@ -142,9 +143,18 @@ export const api = {
   clearSession,
   login,
   me: () => request('/auth/me'),
+  listHq: () => request('/hq/'),
   createHq: (payload) => request('/hq/create', { method: 'POST', body: JSON.stringify(payload) }),
+  updateHq: (id, payload) => request(`/hq/update/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteHq: (id) => request(`/hq/delete/${id}`, { method: 'DELETE' }),
+  listUnits: () => request('/unit/'),
   createUnit: (payload) => request('/unit/create', { method: 'POST', body: JSON.stringify(payload) }),
+  updateUnit: (id, payload) => request(`/unit/update/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteUnit: (id) => request(`/unit/delete/${id}`, { method: 'DELETE' }),
+  listBranches: () => request('/branch/'),
   createBranch: (payload) => request('/branch/create', { method: 'POST', body: JSON.stringify(payload) }),
+  updateBranch: (id, payload) => request(`/branch/update/${id}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteBranch: (id) => request(`/branch/delete/${id}`, { method: 'DELETE' }),
   listUsers: () => request('/users/'),
   createUser: (payload) => request('/users/create', { method: 'POST', body: JSON.stringify(normalizeUser(payload)) }),
   updateUser: (id, payload) => request(`/users/update/${id}`, { method: 'PUT', body: JSON.stringify(normalizeUser(payload, { includeBlankPassword: false })) }),
