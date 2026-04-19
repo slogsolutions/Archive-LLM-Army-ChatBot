@@ -51,3 +51,38 @@ Users:
    - Clerk
    - Trainee
 ```
+
+
+# Revised Structure 
+
+```
+ARCHIVE-LLM-ARMY-PROJECT/
+│
+├── Archive/
+│   ├── backend/
+│   │   ├── app/
+│   │   │   ├── api/
+│   │   │   ├── core/
+│   │   │   ├── models/
+│   │   │   ├── services/
+│   │   │   ├── worker/              # Celery (OCR trigger)
+│   │   │   └── main.py
+│   │   │
+│   │   ├── requirements.txt
+│   │   └── .env
+│   │
+│   ├── rag/                          CORE INTELLIGENCE
+│   │   ├── ingestion/
+│   │   ├── embedding/
+│   │   ├── vector_store/
+│   │   ├── retriever/
+│   │   └── pipeline.py
+│   │
+│   ├── frontend/
+│   ├── nginx/
+│   ├── docker-compose.yml
+│   └── data-Migration/
+│
+├── LLM/                             (NEXT PHASE)
+└── Flow.md
+```

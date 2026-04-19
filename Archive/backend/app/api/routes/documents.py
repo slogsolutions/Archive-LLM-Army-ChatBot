@@ -1,13 +1,14 @@
-from fastapi import APIRouter, UploadFile, File, Depends, HTTPException
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException , Form
 from sqlalchemy.orm import Session
 from fastapi.responses import StreamingResponse
 import uuid
+
 
 from app.core.deps import get_current_user, get_db
 from app.models.document import Document
 from app.services.minio_service import upload_file, get_file_stream
 from app.core.rbac import get_filter
-from app.services.search_service import search_documents
+# from app.services.search_service import search_documents
 from app.workers.ocr_tasks import process_document
 
 # ✅ RBAC Dependency
@@ -24,8 +25,8 @@ def upload_document(
     file: UploadFile = File(...),
 
     # ✅ MAKE THESE MANDATORY
-    branch: str = None,
-    document_type: str = None,
+    branch: str = Form(...),
+    document_type: str = Form(...),
 
     # Optional (keep if needed)
     hq_id: int = None,
@@ -201,25 +202,26 @@ def update_text(
 # =========================
 # DOWNLOAD DOCUMENT
 # =========================
-@router.get("/download/{doc_id}")
-def download_document(
-    doc=Depends(require_document_access("view"))
-):
 
-    file_stream = get_file_stream(doc.minio_path)
+# @router.get("/download/{doc_id}")
+# def download_document(
+#     doc=Depends(require_document_access("view"))
+# ):
 
-    return StreamingResponse(
-        file_stream,
-        media_type=doc.file_type or "application/octet-stream",
-        headers={
-            "Content-Disposition": f'attachment; filename="{doc.file_name}"'
-        }
-    )
+#     file_stream = get_file_stream(doc.minio_path)
+
+#     return StreamingResponse(
+#         file_stream,
+#         media_type=doc.file_type or "application/octet-stream",
+#         headers={
+#             "Content-Disposition": f'attachment; filename="{doc.file_name}"'
+#         }
+#     )
 
 
-# =========================
-# SEARCH
-# =========================
-@router.get("/search")
-def search(query: str, user=Depends(get_current_user)):
-    return search_documents(query)
+# # =========================
+# # SEARCH
+# # =========================
+# @router.get("/search")
+# def search(query: str, user=Depends(get_current_user)):
+#     return search_documents(query)

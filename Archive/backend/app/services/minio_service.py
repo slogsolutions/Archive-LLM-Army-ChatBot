@@ -18,6 +18,7 @@ client = Minio(
 # =========================
 # UPLOAD FILE (UPDATED)
 # =========================
+
 def upload_file(file: UploadFile, file_name: str, branch: str, document_type: str):
     print("=== MINIO UPLOAD START ===")
 
