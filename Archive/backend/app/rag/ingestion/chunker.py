@@ -1,11 +1,19 @@
-# 03 split text
-
 def chunk_text(text, size=400, overlap=50):
-    words = text.split()
-    chunks = []
+    paragraphs = text.split("\n")
 
-    for i in range(0, len(words), size - overlap):
-        chunk = " ".join(words[i:i+size])
-        chunks.append(chunk)
+    chunks = []
+    current_chunk = []
+
+    for para in paragraphs:
+        words = para.split()
+
+        if len(current_chunk) + len(words) <= size:
+            current_chunk.extend(words)
+        else:
+            chunks.append(" ".join(current_chunk))
+            current_chunk = words
+
+    if current_chunk:
+        chunks.append(" ".join(current_chunk))
 
     return chunks
