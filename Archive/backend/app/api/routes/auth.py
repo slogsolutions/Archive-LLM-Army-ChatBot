@@ -19,7 +19,7 @@ def get_db():
 
 @router.post("/login")
 def login(data: UserLogin, db: Session = Depends(get_db)):
-    user = db.query(User).filter(User.email == data.email).first()
+    user = db.query(User).filter(User.army_number == data.army_number).first()
 
     if not user or not verify_password(data.password, user.password):
         raise HTTPException(status_code=400, detail="Invalid credentials")
