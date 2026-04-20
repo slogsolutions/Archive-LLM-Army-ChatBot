@@ -2,14 +2,11 @@ from app.core.queue import celery_app
 from app.core.database import SessionLocal
 from app.models.document import Document
 from app.services.minio_service import download_file
-from app.services.ocr_service import run_ocr
-
-# 🔥 NEW
-# from rag.pipeline import ingest_document
-
+from app.services.ocr_service import run_ocr_on_pdf
 from app.rag.pipeline import ingest_document
 
 import os
+import cv2
 
 
 @celery_app.task
@@ -39,9 +36,22 @@ def process_document(doc_id: int):
         download_file(doc.minio_path, local_path)
 
         # =========================
-        # 3. OCR
+        # 3. OCR (FIXED)
         # =========================
-        text = run_ocr(local_path)
+        # img = cv2.imread(local_path)
+
+        # if img is None:
+        #     print("❌ Failed to read image")
+        #     return
+
+        # text = run_ocr_on_image(img)
+        text = run_ocr_on_pdf(local_path)
+
+        print("TEXT LENGTH:", len(text))
+
+        if not text:
+            print("❌ OCR returned empty text")
+            return
 
         # =========================
         # 4. SAVE OCR
@@ -51,7 +61,7 @@ def process_document(doc_id: int):
         db.commit()
 
         # =========================
-        # 5. 🔥 RAG INGESTION
+        # 5. RAG INGESTION
         # =========================
         ingest_document(doc)
 
