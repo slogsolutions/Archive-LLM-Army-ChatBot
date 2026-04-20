@@ -10,3 +10,8 @@ node_modules
 ml_models/
 *.safetensors
 *.bin
+
+
+Archive/backend/ml_models/
+*.safetensors
+*.bin
