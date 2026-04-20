@@ -5,3 +5,8 @@ __pycache__
 .env
 node_modules
 .next
+
+# ML Models
+ml_models/
+*.safetensors
+*.bin
