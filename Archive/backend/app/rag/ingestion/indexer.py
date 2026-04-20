@@ -1,31 +1,40 @@
+import os
 from elasticsearch import Elasticsearch
+from dotenv import load_dotenv
+from pathlib import Path
 
-es = Elasticsearch("http://localhost:9200")
+# ✅ Load .env (from incoming branch)
+load_dotenv(
+    dotenv_path=Path(__file__).resolve().parent.parent.parent.parent / ".env"
+)
+
+# ✅ Use env-based ES URL (fallback to localhost)
+es = Elasticsearch(os.getenv("ES_URL", "http://localhost:9200"))
 
 
 def index_chunk(doc_id, chunk, embedding, metadata):
     try:
         data = {
-         "doc_id": doc_id,
-         "content": chunk,
-         "embedding": embedding,
+            "doc_id": doc_id,
+            "content": chunk,
+            "embedding": embedding,
 
-    # 🔥 FLATTEN IMPORTANT FIELDS
-         "branch": metadata.get("branch"),
-         "doc_type": metadata.get("doc_type"),
-         "year": metadata.get("year"),
-         "section": metadata.get("section"),
+            # 🔥 FLATTEN IMPORTANT FIELDS (keep this!)
+            "branch": metadata.get("branch"),
+            "doc_type": metadata.get("doc_type"),
+            "year": metadata.get("year"),
+            "section": metadata.get("section"),
 
-    # keep full metadata
-         "metadata": metadata
-}
+            # full metadata
+            "metadata": metadata
+        }
 
         # 🔥 DEBUG
         print("➡️ Indexing chunk:", chunk[:50])
 
         res = es.index(
-            index="documents",   # ⚠️ keep SAME everywhere
-            document=data,
+            index="documents",
+            document=data,   # ✅ correct (NOT body)
             refresh=True
         )
 

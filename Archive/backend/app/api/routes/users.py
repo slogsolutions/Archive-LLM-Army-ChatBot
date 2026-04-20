@@ -41,10 +41,16 @@ def create_user(
     else:
         raise HTTPException(403, "Not allowed")
 
-    # Duplicate email check
-    existing = db.query(User).filter(User.email == data.get("email")).first()
+    if not data.get("army_number"):
+        raise HTTPException(400, "Army number is required")
+
+    if not data.get("name"):
+        raise HTTPException(400, "Name is required")
+
+    # Duplicate army number check
+    existing = db.query(User).filter(User.army_number == data.get("army_number")).first()
     if existing:
-        raise HTTPException(400, "Email already exists")
+        raise HTTPException(400, "Army number already exists")
 
     # 🔥 Clerk logic
     clerk_type = data.get("clerk_type")
@@ -58,7 +64,8 @@ def create_user(
             raise HTTPException(400, "clerk_type must be junior or senior")
 
     new_user = User(
-        email=data.get("email"),
+        army_number=data.get("army_number"),
+        name=data.get("name"),
         password=hash_password(data.get("password")),
         role=role,
         rank_level=data.get("rank_level"),
@@ -143,7 +150,7 @@ def update_user(
         raise HTTPException(403, "Wrong Unit")
 
     allowed_fields = [
-        "email", "password", "role", "rank_level",
+        "army_number", "name", "password", "role", "rank_level",
         "hq_id", "unit_id", "branch_id",
         "task_category", "clerk_type"
     ]

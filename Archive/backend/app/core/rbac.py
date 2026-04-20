@@ -63,7 +63,7 @@ def check_access(user, document, action: str = "view"):
         return (
             user.unit_id == document.unit_id and
             user.branch_id == document.branch_id and
-            user.task_category == document.task_category
+            user.task_category == document.document_type_name
         )
 
     # TRAINEE
@@ -102,7 +102,7 @@ def get_filter(user):
         return {
             "unit_id": user.unit_id,
             "branch_id": user.branch_id,
-            "task_category": user.task_category
+            "document_type_name": user.task_category
         }
 
     if user.role == "trainee":
