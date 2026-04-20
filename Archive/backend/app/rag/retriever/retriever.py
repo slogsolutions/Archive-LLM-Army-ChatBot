@@ -1,6 +1,11 @@
-# 07 hybrid search (BM25 + vector)from elasticsearch import Elasticsearch
+import os
+from elasticsearch import Elasticsearch
+from dotenv import load_dotenv
+from pathlib import Path
 
-es = Elasticsearch("http://localhost:9200")
+load_dotenv(dotenv_path=Path(__file__).resolve().parent.parent.parent.parent / ".env")
+
+es = Elasticsearch(os.getenv("ES_URL", "http://localhost:9200"))
 
 
 def search(query, embedding):

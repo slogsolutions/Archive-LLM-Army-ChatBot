@@ -4,17 +4,19 @@ from app.services.auth_service import hash_password
 
 db = SessionLocal()
 
-email = "super@army.com"
+army_number = "ARMY-SUPER-001"
+name = "Super Admin"
 password = "123"
 
 # Check if exists
-existing = db.query(User).filter(User.email == email).first()
+existing = db.query(User).filter(User.army_number == army_number).first()
 
 if existing:
     print("SuperAdmin already exists")
 else:
     user = User(
-        email=email,
+        army_number=army_number,
+        name=name,
         password=hash_password(password),
         role="super_admin",
         rank_level=1,
