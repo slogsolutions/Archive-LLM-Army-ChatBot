@@ -41,3 +41,5 @@ htmlcov/
 
 # 🔹 Misc
 *.swp
+
+Archive/backend/ml_models
