@@ -1,5 +1,9 @@
 from minio import Minio
 from fastapi import UploadFile
+
+from datetime import datetime
+import os
+
 from app.core.config import (
     MINIO_ENDPOINT,
     MINIO_ACCESS_KEY,
@@ -69,9 +73,37 @@ def download_file(object_path: str, local_path: str):
 # STREAM FILE
 # =========================
 def get_file_stream(object_path: str):
+
     object_name = object_path.replace(f"{MINIO_BUCKET}/", "")
 
     return client.get_object(
         bucket_name=MINIO_BUCKET,
         object_name=object_name
     )
+
+
+
+# =========================
+# DELETE FILE (MOVE TO DELETED FODLER inside minio)
+# =========================
+
+def move_to_deleted(old_path: str) -> str:
+    """
+    Move file to deleted/ folder instead of permanent delete
+    """
+    filename = old_path.split("/")[-1]
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+
+    new_path = f"deleted/{timestamp}_{filename}"
+
+    # Copy file to deleted folder
+    client.copy_object(
+        BUCKET,
+        new_path,
+        f"{BUCKET}/{old_path}"
+    )
+
+    # Remove original file
+    client.remove_object(BUCKET, old_path)
+
+    return new_path

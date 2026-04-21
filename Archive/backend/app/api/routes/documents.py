@@ -12,6 +12,8 @@ from app.core.rbac import get_filter
 from app.core.document_access import require_document_access
 from app.workers.ocr_tasks import process_document
 
+from app.services.minio_service import move_to_deleted
+
 router = APIRouter()
 
 
@@ -181,6 +183,9 @@ def approve_document(
 def get_document(
     doc=Depends(require_document_access("view")),
 ):
+    if doc.is_deleted:
+        raise HTTPException(404, "Document not found")
+
     return doc
 
 
@@ -202,6 +207,7 @@ def list_documents(
     if user.role not in ["officer", "unit_admin", "hq_admin", "super_admin"]:
         query = query.filter(Document.is_approved == True)
 
+    query = query.filter(Document.is_deleted == False)
     return query.all()
 
 
@@ -232,7 +238,11 @@ def update_text(
 def download_document(
     doc=Depends(require_document_access("view")),
 ):
+    if doc.is_deleted:
+        raise HTTPException(404, "Document not found")
+
     file_stream = get_file_stream(doc.minio_path)
+
     return StreamingResponse(
         file_stream,
         media_type=doc.file_type or "application/octet-stream",
@@ -263,3 +273,73 @@ def reindex_document(
         raise HTTPException(500, f"Could not queue reindex: {e}")
 
     return {"message": "Re-index queued", "doc_id": doc.id}
+
+
+# =========================
+# DELETE
+# =========================
+@router.delete("/delete/{doc_id}")
+def delete_document(
+    doc=Depends(require_document_access("view")),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    # Officer or Senior Clerk → direct delete
+    if user.role == "officer" or (
+        user.role == "clerk" and user.clerk_type == "senior"
+    ):
+        # 🔥 MOVE FILE IN MINIO
+        new_path = move_to_deleted(doc.minio_path)
+
+        doc.minio_path = new_path
+        doc.is_deleted = True
+        doc.deleted_by = user.id
+        doc.status = "deleted"
+
+        db.commit()
+
+        return {"message": "Document deleted (moved to deleted folder)"}
+
+    # Junior Clerk → request delete
+    if user.role == "clerk" and user.clerk_type == "junior":
+        doc.delete_requested = True
+        doc.delete_requested_by = user.id
+        doc.status = "delete_requested"
+
+        db.commit()
+
+        return {"message": "Delete request sent"}
+
+    raise HTTPException(403, "Not allowed")
+
+
+
+# =========================
+# DELETE APRROVAL
+# =========================
+
+@router.post("/approve-delete/{doc_id}")
+def approve_delete(
+    doc=Depends(require_document_access("approve")),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not doc.delete_requested:
+        raise HTTPException(400, "No delete request found")
+
+    if user.role not in ["officer"] and not (
+        user.role == "clerk" and user.clerk_type == "senior"
+    ):
+        raise HTTPException(403, "Not allowed")
+
+    # 🔥 MOVE FILE IN MINIO
+    new_path = move_to_deleted(doc.minio_path)
+
+    doc.minio_path = new_path
+    doc.is_deleted = True
+    doc.deleted_by = user.id
+    doc.status = "deleted"
+
+    db.commit()
+
+    return {"message": "Delete approved & file moved"}
