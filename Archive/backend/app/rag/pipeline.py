@@ -56,6 +56,32 @@ def ingest_document(doc, parsed_doc: ParsedDocument | None = None) -> int:
 
     # ── 4. Chunk (sentence-aware sliding window with overlap) ─────────────
     chunks = chunk_document(parsed_doc.pages, chunk_size=350, overlap=80)
+
+    from app.models.document_chunks import DocumentChunk
+    from app.core.database import SessionLocal
+
+    db = SessionLocal()
+
+    # delete old chunks (re-index case)
+    db.query(DocumentChunk).filter(
+    DocumentChunk.document_id == doc.id
+    ).delete()
+
+    for c in chunks:
+        db.add(DocumentChunk(
+        document_id=doc.id,
+        chunk_text=c.text,
+        page=c.page_number,
+        section=metadata.get("section"),
+        chunk_index=c.chunk_index,
+        total_chunks=c.total_chunks,
+        heading=c.heading,
+        char_offset=c.char_offset,
+    ))
+
+    db.commit()
+    db.close()
+
     if not chunks:
         print(f"[PIPELINE] doc_id={doc.id}: chunker produced no chunks")
         return 0
@@ -63,7 +89,19 @@ def ingest_document(doc, parsed_doc: ParsedDocument | None = None) -> int:
     print(f"[PIPELINE] doc_id={doc.id}: {len(chunks)} chunks from {len(parsed_doc.pages)} pages")
 
     # ── 5. Embed in batch ─────────────────────────────────────────────────
+    # CHUNK DEDUPLICATION
+    seen = set()
+    unique_chunks = []
+    
+    for c in chunks:
+        key = c.text.strip().lower()
+        if key not in seen:
+            seen.add(key)
+            unique_chunks.append(c)
+
+    chunks = unique_chunks
     texts = [c.text for c in chunks]
+
     embeddings = get_embeddings(texts)
 
     if len(embeddings) != len(chunks):

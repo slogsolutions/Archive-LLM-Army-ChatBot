@@ -13,6 +13,16 @@ celery_app = Celery(
     backend=_redis_url,
 )
 
+celery_app.conf.update(
+    broker_connection_retry_on_startup=True,
+    task_serializer="json",
+    result_serializer="json",
+    accept_content=["json"],
+    timezone="UTC",
+    enable_utc=True,
+    task_track_started=True,
+    worker_prefetch_multiplier=1,
+)
 
 celery_app.autodiscover_tasks(["app.workers"])
 import app.workers.ocr_tasks

@@ -283,7 +283,7 @@ export default function HierarchyPage() {
             >
               <button className="hierarchy-node-main" onClick={() => setActiveUnitId(String(unit.id))}>
                 <span>{unit.name}</span>
-                <small>HQ {unit.hq_id}</small>
+                <small>{hqs.find((h) => h.id === unit.hq_id)?.name || `HQ ${unit.hq_id}`}</small>
               </button>
               <div className="node-actions">
                 <button type="button" className="node-action" onClick={() => editUnit(unit)}>Edit</button>
@@ -302,7 +302,7 @@ export default function HierarchyPage() {
             <div key={branch.id} className="hierarchy-node static">
               <div className="hierarchy-node-main">
                 <span>{branch.name}</span>
-                <small>{branch.description || `Unit ${branch.unit_id}`}</small>
+                <small>{branch.description || units.find((u) => u.id === branch.unit_id)?.name || `Unit ${branch.unit_id}`}</small>
               </div>
               <div className="node-actions">
                 <button type="button" className="node-action" onClick={() => editBranch(branch)}>Edit</button>

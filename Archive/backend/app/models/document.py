@@ -24,6 +24,10 @@ class Document(Base):
 
     document_type_id = Column(Integer)
 
+    # VERSIONING 
+    version = Column(Integer, default=1)
+    parent_id = Column(Integer, nullable=True)
+
     # ✅ HUMAN READABLE METADATA (IMPORTANT)
     branch_name = Column(String, nullable=False)
     document_type_name = Column(String, nullable=False)

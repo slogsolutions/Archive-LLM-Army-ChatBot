@@ -56,6 +56,7 @@ export default function Sidebar({ user }) {
         </div>
         <button className="sidebar-logout" onClick={handleLogout} title="Sign out">
           <span className="material-icons">logout</span>
+          <span className="sidebar-logout-label">Sign out</span>
         </button>
       </div>
     </aside>

@@ -19,7 +19,12 @@ def _ext(filename: str) -> str:
     return os.path.splitext(filename)[1].lower()
 
 
-@celery_app.task
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 3}
+)
 def process_document(doc_id: int):
     """
     Celery task: download → parse/OCR → save text → RAG ingest.

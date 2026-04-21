@@ -5,11 +5,13 @@ from app.core.config import ALLOWED_ORIGINS
 # DB
 from app.core.database import Base, engine
 
-# MODELS (IMPORTANT: must import all)
+# MODELS (IMPORTANT: must import all so SQLAlchemy creates tables)
 from app.models.user import User
 from app.models.hq import HeadQuarter
 from app.models.unit import Unit
 from app.models.branch import Branch
+from app.models.document import Document
+from app.models.document_chunks import DocumentChunk
 
 # ROUTES
 from app.api.routes import auth, users, hq, unit, branch
@@ -55,4 +57,4 @@ def test():
 # =========================
 # CREATE TABLES (DEV ONLY)
 # =========================
-Base.metadata.create_all(bind=engine)
+# Base.metadata.create_all(bind=engine)

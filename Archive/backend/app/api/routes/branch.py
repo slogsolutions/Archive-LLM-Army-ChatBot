@@ -3,34 +3,47 @@ from sqlalchemy.orm import Session
 from app.models.branch import Branch
 from app.models.unit import Unit
 from app.core.deps import get_current_user, get_db
+from app.core.audit import audit_action
 
 router = APIRouter()
 
 
+def _branch_dict(branch, units) -> dict:
+    unit = next((u for u in units if u.id == branch.unit_id), None)
+    return {
+        "id": branch.id,
+        "name": branch.name,
+        "description": branch.description,
+        "unit_id": branch.unit_id,
+        "unit_name": unit.name if unit else None,
+        "hq_id": unit.hq_id if unit else None,
+    }
+
+
 @router.get("/")
+@audit_action("GET_HQ")
 def list_branches(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    all_units = db.query(Unit).all()
     query = db.query(Branch)
 
     if user.role == "super_admin":
-        return query.order_by(Branch.name).all()
-
-    if user.role == "hq_admin":
-        unit_ids = [
-            unit.id for unit in db.query(Unit.id).filter(Unit.hq_id == user.hq_id).all()
-        ]
-        return query.filter(Branch.unit_id.in_(unit_ids)).order_by(Branch.name).all()
-
-    if user.role == "unit_admin":
-        return query.filter(Branch.unit_id == user.unit_id).order_by(Branch.name).all()
-
-    if user.branch_id:
+        branches = query.order_by(Branch.name).all()
+    elif user.role == "hq_admin":
+        unit_ids = [u.id for u in all_units if u.hq_id == user.hq_id]
+        branches = query.filter(Branch.unit_id.in_(unit_ids)).order_by(Branch.name).all()
+    elif user.role == "unit_admin":
+        branches = query.filter(Branch.unit_id == user.unit_id).order_by(Branch.name).all()
+    elif user.branch_id:
         branch = db.get(Branch, user.branch_id)
-        return [branch] if branch else []
+        branches = [branch] if branch else []
+    else:
+        branches = []
 
-    return []
+    return [_branch_dict(b, all_units) for b in branches]
 
 
 @router.post("/create")
+@audit_action("CREATE_HQ")
 def create_branch(data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
 
     if user.role not in ["super_admin", "hq_admin", "unit_admin"]:
@@ -64,11 +77,13 @@ def create_branch(data: dict, user=Depends(get_current_user), db: Session = Depe
 
     db.add(branch)
     db.commit()
+    db.refresh(branch)
 
-    return {"message": "Branch created"}
+    return {"message": f"Branch '{branch.name}' created", "id": branch.id, "name": branch.name}
 
 
 @router.put("/update/{branch_id}")
+@audit_action("UPDATE_HQ")
 def update_branch(branch_id: int, data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
     branch = db.get(Branch, branch_id)
     if not branch:
@@ -110,6 +125,7 @@ def update_branch(branch_id: int, data: dict, user=Depends(get_current_user), db
 
 
 @router.delete("/delete/{branch_id}")
+@audit_action("DELETE_HQ")
 def delete_branch(branch_id: int, user=Depends(get_current_user), db: Session = Depends(get_db)):
     branch = db.get(Branch, branch_id)
     if not branch:
