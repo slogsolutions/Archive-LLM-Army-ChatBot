@@ -16,7 +16,9 @@ _es = None
 def _get_client():
     global _es
     if _es is None:
-        _es = ensure_index()
+        es = get_es()
+        _es = ensure_index(es)
+        
     return _es
 
 
@@ -45,7 +47,13 @@ def index_chunks(
     # Build bulk operations list: [action, doc, action, doc, ...]
     operations = []
     for chunk, embedding in zip(chunks, embeddings):
-        operations.append({"index": {"_index": INDEX_NAME}})
+        # operations.append({"index": {"_index": INDEX_NAME}})
+        operations.append({
+        "index": {
+             "_index": INDEX_NAME,
+             "_id": f"{doc_id}_{chunk.chunk_index}"
+    }
+})
         operations.append({
             "doc_id":           doc_id,
             "content":          chunk.text,
@@ -72,7 +80,8 @@ def index_chunks(
         })
 
     try:
-        resp = es.bulk(operations=operations, refresh=True)
+        # resp = es.bulk(operations=operations, refresh=True)
+        resp = es.bulk(body=operations, refresh=True)
         errors = [
             item for item in resp.get("items", [])
             if "error" in item.get("index", {})

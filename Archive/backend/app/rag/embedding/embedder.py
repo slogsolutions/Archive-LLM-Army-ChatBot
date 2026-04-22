@@ -1,5 +1,6 @@
 from sentence_transformers import SentenceTransformer
 import os
+from pathlib import Path
 
 # 🔥 OFFLINE MODE
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -9,35 +10,47 @@ _model = None
 
 
 def get_model():
+
     global _model
 
     if _model is None:
         print("🚀 Loading embedding model...")
 
-        # 🔥 Go from embedder.py → backend/
-        base_dir = os.path.dirname(
-            os.path.dirname(
-                os.path.dirname(
-                    os.path.dirname(__file__)   # ← FIXED (4 levels)
-                )
-            )
-        )
+        # ✅ ALWAYS USE PROJECT ROOT (where you run python)
+        BASE_DIR = Path.cwd()
 
-        model_path = os.path.join(base_dir, "ml_models", "embedding")
+        print("📁 Current Working Dir:", BASE_DIR)
 
-        print(f"📁 Looking for model at: {model_path}")
+        model_path = BASE_DIR / "app" / "ml_models" / "embedding"
 
-        if not os.path.exists(model_path):
-            raise RuntimeError(f"❌ Model not found at {model_path}")
+        print("📂 Exists:", model_path.exists())
+        print("📂 Files:", list(model_path.glob("*")))
 
-        _model = SentenceTransformer(model_path)
-        print("✅ Model loaded successfully")
+        if not model_path.exists():
+            raise RuntimeError(f"❌ Model NOT FOUND at: {model_path}")
+
+        import time
+        start = time.time()
+
+        _model = SentenceTransformer(str(model_path))
+
+        print(f"✅ Model loaded in {round(time.time() - start, 2)} sec")
 
     return _model
 
 
-def get_embeddings(texts: list[str]):
+
+
+
+
+
+
+def get_embeddings(texts):
+    print("🧠 get_embeddings called")
+
     model = get_model()
+
+    print("🧠 Model ready, encoding...")
 
     if not texts:
         return []
@@ -45,9 +58,13 @@ def get_embeddings(texts: list[str]):
     if isinstance(texts, str):
         texts = [texts]
 
-    return model.encode(
+    embeddings = model.encode(
         texts,
         batch_size=32,
         normalize_embeddings=True,
-        show_progress_bar=False
-    ).tolist()
+        show_progress_bar=True
+    )
+
+    print("🧠 Encoding done")
+
+    return embeddings.tolist()

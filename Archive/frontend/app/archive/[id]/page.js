@@ -8,11 +8,12 @@ import { api, formatFileSize } from '../../lib/api';
 
 // Stages in display order
 const PIPELINE_STAGES = [
-  { key: 'uploaded',    label: 'Uploaded',       icon: 'upload_file' },
-  { key: 'approved',    label: 'Approved',        icon: 'verified' },
-  { key: 'processing',  label: 'OCR Running',     icon: 'sync' },
-  { key: 'processed',   label: 'OCR Complete',    icon: 'text_snippet' },
-  { key: 'indexed',     label: 'Indexed',         icon: 'search' },
+  { key: 'uploaded',    label: 'Uploaded',        icon: 'upload_file' },
+  { key: 'approved',    label: 'Approved',         icon: 'verified' },
+  { key: 'processing',  label: 'OCR Running',      icon: 'sync' },
+  { key: 'processed',   label: 'OCR Complete',     icon: 'text_snippet' },
+  { key: 'reviewed',    label: 'Text Reviewed',    icon: 'edit_note' },
+  { key: 'indexed',     label: 'Indexed',          icon: 'search' },
 ];
 
 const STAGE_ORDER = ['uploaded', 'approved', 'processing', 'processed', 'reviewed', 'indexed'];
@@ -70,6 +71,13 @@ function PipelineTimeline({ doc }) {
           OCR failed — use Re-queue OCR to retry
         </div>
       )}
+      {doc.status === 'rejected' && (
+        <div className="pipeline-error-msg" style={{ color: 'var(--color-danger)' }}>
+          <span className="material-icons" style={{ fontSize: '14px' }}>cancel</span>
+          Rejected{doc.rejector_name ? ` by ${doc.rejector_name}` : ''}
+          {doc.rejection_reason && ` — ${doc.rejection_reason}`}
+        </div>
+      )}
       {isDeleted && (
         <div className="pipeline-error-msg" style={{ color: 'var(--color-danger)' }}>
           <span className="material-icons" style={{ fontSize: '14px' }}>delete</span>
@@ -81,6 +89,8 @@ function PipelineTimeline({ doc }) {
 }
 
 const ACTIVE_STATUSES = new Set(['processing', 'uploaded']);
+// Statuses where the "Index Corrected Text" action is valid
+const CAN_INDEX_TEXT_STATUSES = new Set(['processed', 'reviewed', 'error']);
 
 export default function PreviewEditPage() {
   const params = useParams();
@@ -101,6 +111,8 @@ export default function PreviewEditPage() {
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isActing, setIsActing] = useState(false);
+  const [showRejectInput, setShowRejectInput] = useState(false);
+  const [rejectReason, setRejectReason] = useState('');
 
   const pollRef = useRef(null);
 
@@ -121,10 +133,10 @@ export default function PreviewEditPage() {
 
   const startPolling = (doc) => {
     stopPolling();
-    if (doc && doc.is_approved && ACTIVE_STATUSES.has(doc.status)) {
+    if (doc && ACTIVE_STATUSES.has(doc.status)) {
       pollRef.current = setInterval(async () => {
         const fresh = await loadDocument(true);
-        if (fresh && (!fresh.is_approved || !ACTIVE_STATUSES.has(fresh.status))) {
+        if (fresh && !ACTIVE_STATUSES.has(fresh.status)) {
           stopPolling();
         }
       }, 5000);
@@ -165,11 +177,24 @@ export default function PreviewEditPage() {
     }
   };
 
-  const approve = act('Document approved', () => api.approveDocument(id));
+  const approve = act('Document approved', async () => {
+    const result = await api.approveDocument(id);
+    setShowRejectInput(false);
+    return result;
+  });
+
+  const submitReject = act('Document rejected', async () => {
+    if (!rejectReason.trim()) throw new Error('Rejection reason is required');
+    const result = await api.rejectDocument(id, rejectReason.trim());
+    setRejectReason('');
+    setShowRejectInput(false);
+    return result;
+  });
   const approveDelete = act('Delete approved', () => api.approveDelete(id));
   const requestDelete = act('Delete request submitted', () => api.requestDelete(id));
   const directDelete = act('Document deleted', () => api.requestDelete(id));
   const reindex = act('Re-queued for OCR', () => api.reindexDocument(id));
+  const indexText = act('Queued for indexing', () => api.indexDocumentText(id));
 
   const download = async () => {
     setMessage('');
@@ -221,12 +246,12 @@ export default function PreviewEditPage() {
           <div className="card mt-4 mb-4" style={{ padding: '20px 24px' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
               <h2 className="section-title" style={{ margin: 0 }}>Processing Pipeline</h2>
-              {doc.is_approved && ACTIVE_STATUSES.has(doc.status) && (
+              {ACTIVE_STATUSES.has(doc.status) && (
                 <span style={{ fontSize: '12px', color: 'var(--color-primary)', display: 'flex', alignItems: 'center', gap: '4px' }}>
                   <span className="pipeline-spinner" /> Auto-refreshing…
                 </span>
               )}
-              {!doc.is_approved && (
+              {!doc.is_approved && !ACTIVE_STATUSES.has(doc.status) && (
                 <span style={{ fontSize: '12px', color: 'var(--color-warning)' }}>
                   Waiting for officer approval
                 </span>
@@ -305,12 +330,67 @@ export default function PreviewEditPage() {
                 <div><strong>Uploaded</strong><span>{doc.created_at ? new Date(doc.created_at).toLocaleDateString() : '-'}</span></div>
               </div>
 
-              {/* Approval alert */}
-              {!doc.is_approved && (
+              {/* Rejection info */}
+              {doc.status === 'rejected' && (
+                <div className="info-card mb-4" style={{ borderLeft: '4px solid var(--color-danger)' }}>
+                  <p className="info-card-text" style={{ margin: 0, color: 'var(--color-danger)' }}>
+                    <strong>Rejected</strong>{doc.rejector_name ? ` by ${doc.rejector_name}` : ''}
+                  </p>
+                  {doc.rejection_reason && (
+                    <p className="info-card-text" style={{ margin: '6px 0 0' }}>
+                      Reason: <em>{doc.rejection_reason}</em>
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {/* Approval info */}
+              {doc.is_approved && doc.approver_name && (
+                <div className="info-card mb-4" style={{ borderLeft: '4px solid var(--color-success, #16a34a)' }}>
+                  <p className="info-card-text" style={{ margin: 0 }}>
+                    <strong>Approved</strong> by {doc.approver_name}
+                  </p>
+                </div>
+              )}
+
+              {/* Pending approval alert */}
+              {!doc.is_approved && doc.status !== 'rejected' && (
                 <div className="info-card amber-card mb-4">
                   <p className="info-card-text" style={{ margin: 0 }}>
                     This document is <strong>pending officer approval</strong>. OCR processing will begin after approval.
                   </p>
+                </div>
+              )}
+
+              {/* Inline reject reason input */}
+              {showRejectInput && (
+                <div className="mb-4" style={{ border: '1px solid var(--color-danger)', borderRadius: '8px', padding: '12px' }}>
+                  <label className="form-label" style={{ color: 'var(--color-danger)' }}>Rejection Reason</label>
+                  <textarea
+                    className="form-textarea"
+                    rows={3}
+                    value={rejectReason}
+                    onChange={(e) => setRejectReason(e.target.value)}
+                    placeholder="Enter reason for rejection..."
+                  />
+                  <div className="flex gap-2 mt-2">
+                    <button
+                      type="button"
+                      className="btn btn-sm"
+                      style={{ background: 'var(--color-danger)', color: '#fff' }}
+                      onClick={submitReject}
+                      disabled={isActing || !rejectReason.trim()}
+                    >
+                      Confirm Reject
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-secondary"
+                      onClick={() => { setShowRejectInput(false); setRejectReason(''); }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -335,7 +415,7 @@ export default function PreviewEditPage() {
                   Download
                 </button>
 
-                {canApprove && !doc.is_approved && (
+                {canApprove && !doc.is_approved && doc.status !== 'rejected' && (
                   <button
                     type="button"
                     className="review-btn review-btn-approve"
@@ -344,6 +424,31 @@ export default function PreviewEditPage() {
                   >
                     <span className="material-icons">check_circle</span>
                     Approve
+                  </button>
+                )}
+
+                {canApprove && !doc.is_approved && doc.status !== 'rejected' && (
+                  <button
+                    type="button"
+                    className="review-btn review-btn-reject"
+                    style={{ background: 'var(--color-danger)', color: '#fff' }}
+                    onClick={() => setShowRejectInput((v) => !v)}
+                    disabled={isActing}
+                  >
+                    <span className="material-icons">cancel</span>
+                    Reject
+                  </button>
+                )}
+
+                {canApprove && doc.status === 'rejected' && (
+                  <button
+                    type="button"
+                    className="review-btn review-btn-approve"
+                    onClick={approve}
+                    disabled={isActing}
+                  >
+                    <span className="material-icons">check_circle</span>
+                    Approve Anyway
                   </button>
                 )}
 
@@ -393,10 +498,24 @@ export default function PreviewEditPage() {
                     style={{ background: 'var(--color-primary)', color: '#fff' }}
                     onClick={reindex}
                     disabled={isActing || doc.status === 'processing'}
-                    title={!doc.is_approved ? 'Approve and queue for OCR' : doc.status === 'error' ? 'Retry OCR processing' : 'Re-queue for OCR / re-index'}
+                    title={!doc.is_approved ? 'Approve and queue for OCR' : doc.status === 'error' ? 'Retry OCR processing' : 'Re-run OCR from scratch'}
                   >
                     <span className="material-icons">sync</span>
-                    {!doc.is_approved ? 'Approve & Queue OCR' : doc.status === 'error' ? 'Retry OCR' : 'Re-queue OCR'}
+                    {!doc.is_approved ? 'Approve & Queue OCR' : doc.status === 'error' ? 'Retry OCR' : 'Re-run OCR'}
+                  </button>
+                )}
+
+                {canEditText && doc.is_approved && CAN_INDEX_TEXT_STATUSES.has(doc.status) && !doc.is_deleted && (
+                  <button
+                    type="button"
+                    className="review-btn"
+                    style={{ background: 'var(--color-success, #16a34a)', color: '#fff' }}
+                    onClick={indexText}
+                    disabled={isActing}
+                    title="Index the current corrected text into Elasticsearch (does not re-run OCR)"
+                  >
+                    <span className="material-icons">library_add</span>
+                    Index Text
                   </button>
                 )}
               </div>
@@ -411,7 +530,7 @@ export default function PreviewEditPage() {
                       className="form-textarea ocr-textarea"
                       value={text}
                       onChange={(event) => setText(event.target.value)}
-                      placeholder="OCR text will appear here after processing. You can correct errors before re-indexing."
+                      placeholder="OCR text will appear here after processing. Correct errors here, save, then click Index Text to update the search index."
                     />
                   </div>
                   <button
@@ -420,8 +539,13 @@ export default function PreviewEditPage() {
                     style={{ justifyContent: 'center' }}
                     disabled={isSaving}
                   >
-                    {isSaving ? 'Saving...' : 'Save OCR Text'}
+                    {isSaving ? 'Saving...' : 'Save Corrected Text'}
                   </button>
+                  {doc.is_approved && (doc.ocr_text || doc.corrected_text) && (
+                    <p style={{ fontSize: '12px', color: 'var(--color-muted)', marginTop: '8px', textAlign: 'center' }}>
+                      After saving, click <strong>Index Text</strong> above to update the search index with your corrections.
+                    </p>
+                  )}
                 </form>
               )}
             </div>

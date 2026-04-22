@@ -5,23 +5,44 @@ import { useRouter } from 'next/navigation';
 import AppLayout from '../components/AppLayout';
 import { api, formatFileSize } from '../lib/api';
 
-const STATUS_TABS = [
-  { key: 'all', label: 'All' },
-  { key: 'pending', label: 'Pending Approval' },
-  { key: 'indexed', label: 'Indexed' },
-  { key: 'processed', label: 'Processed' },
+// Tabs shown to each role category
+const OFFICER_TABS = [
+  { key: 'all',              label: 'All' },
+  { key: 'pending',          label: 'Pending Review' },
+  { key: 'indexed',          label: 'Indexed' },
+  { key: 'processed',        label: 'Processed' },
   { key: 'delete_requested', label: 'Delete Requests' },
 ];
 
+const CLERK_TABS = [
+  { key: 'all',       label: 'All' },
+  { key: 'my_uploads', label: 'My Uploads' },
+  { key: 'indexed',   label: 'Indexed' },
+  { key: 'processed', label: 'Processed' },
+];
+
+const DEFAULT_TABS = [
+  { key: 'all',     label: 'All' },
+  { key: 'indexed', label: 'Indexed' },
+];
+
+function getTabs(role) {
+  if (['officer', 'unit_admin', 'hq_admin', 'super_admin'].includes(role)) return OFFICER_TABS;
+  if (role === 'clerk') return CLERK_TABS;
+  return DEFAULT_TABS;
+}
+
 function statusBadge(doc) {
+  if (doc.status === 'rejected') return 'badge-danger';
   if (doc.delete_requested) return 'badge-danger';
   if (!doc.is_approved) return 'badge-pending';
-  if (['indexed'].includes(doc.status)) return 'badge-success';
+  if (doc.status === 'indexed') return 'badge-success';
   if (['processed', 'reviewed'].includes(doc.status)) return 'badge-approved';
   return 'badge-approved';
 }
 
 function statusLabel(doc) {
+  if (doc.status === 'rejected') return 'rejected';
   if (doc.delete_requested) return 'delete requested';
   if (!doc.is_approved) return 'pending approval';
   return doc.status || 'approved';
@@ -30,9 +51,12 @@ function statusLabel(doc) {
 export default function DocumentArchivePage() {
   const router = useRouter();
   const user = api.getUser();
+  const role = user?.role || '';
+
+  const tabs = getTabs(role);
 
   const [documents, setDocuments] = useState([]);
-  const [searchResults, setSearchResults] = useState(null); // null = not in search mode
+  const [searchResults, setSearchResults] = useState(null);
   const [query, setQuery] = useState('');
   const [activeTab, setActiveTab] = useState('all');
   const [filterBranch, setFilterBranch] = useState('');
@@ -50,9 +74,16 @@ export default function DocumentArchivePage() {
     setSearchResults(null);
 
     const params = {};
-    if (tab === 'pending') params.status = 'pending';
-    else if (tab === 'delete_requested') params.status = 'delete_requested';
-    else if (tab !== 'all') params.status = tab;
+
+    if (tab === 'my_uploads') {
+      params.my_uploads = true;
+    } else if (tab === 'pending') {
+      params.status = 'pending';
+    } else if (tab === 'delete_requested') {
+      params.status = 'delete_requested';
+    } else if (tab !== 'all') {
+      params.status = tab;
+    }
 
     if (filterBranch) params.branch_name = filterBranch;
     if (filterDocType) params.doc_type = filterDocType;
@@ -88,7 +119,6 @@ export default function DocumentArchivePage() {
         const results = await api.searchDocuments(trimmed, filters);
         setSearchResults(Array.isArray(results) ? results : []);
       } catch {
-        // Fall back to local filtering if semantic search unavailable
         setSearchResults(null);
       } finally {
         setIsSearching(false);
@@ -98,7 +128,6 @@ export default function DocumentArchivePage() {
     return () => clearTimeout(searchTimer.current);
   }, [query, filterBranch, filterDocType, filterYear]);
 
-  // Local filter fallback when search results are not available
   const visibleDocuments = useMemo(() => {
     const search = query.trim().toLowerCase();
     if (!search) return documents;
@@ -113,12 +142,14 @@ export default function DocumentArchivePage() {
 
   const stats = {
     total: documents.length,
-    pending: documents.filter((d) => !d.is_approved).length,
+    pending: documents.filter((d) => !d.is_approved && d.status !== 'rejected').length,
     approved: documents.filter((d) => d.is_approved).length,
     indexed: documents.filter((d) => d.status === 'indexed').length,
+    rejected: documents.filter((d) => d.status === 'rejected').length,
   };
 
-  const canSeePending = user && ['officer', 'unit_admin', 'hq_admin', 'super_admin'].includes(user.role);
+  const isOfficer = ['officer', 'unit_admin', 'hq_admin', 'super_admin'].includes(role);
+  const isClerk = role === 'clerk';
 
   return (
     <AppLayout
@@ -149,7 +180,7 @@ export default function DocumentArchivePage() {
       {/* Stats */}
       <div className="stats-grid">
         <div className="stat-card primary">
-          <div className="stat-label">Total Documents</div>
+          <div className="stat-label">Total</div>
           <div className="stat-value">{isLoading ? '...' : stats.total}</div>
         </div>
         <div className="stat-card warning">
@@ -200,16 +231,28 @@ export default function DocumentArchivePage() {
         )}
       </div>
 
-      {/* Status tabs (hidden in search mode) */}
+      {/* Tabs */}
       {!isSearchMode && (
         <div className="flex gap-2 mt-2 mb-4" style={{ flexWrap: 'wrap' }}>
-          {STATUS_TABS.filter((tab) => tab.key !== 'pending' || canSeePending).map((tab) => (
+          {tabs.map((tab) => (
             <button
               key={tab.key}
               className={`btn btn-sm ${activeTab === tab.key ? 'btn-primary' : 'btn-secondary'}`}
               onClick={() => setActiveTab(tab.key)}
             >
               {tab.label}
+              {tab.key === 'pending' && stats.pending > 0 && (
+                <span style={{
+                  marginLeft: '6px', background: 'var(--color-warning)',
+                  color: '#fff', borderRadius: '10px', padding: '0 6px', fontSize: '11px'
+                }}>{stats.pending}</span>
+              )}
+              {tab.key === 'my_uploads' && stats.rejected > 0 && (
+                <span style={{
+                  marginLeft: '6px', background: 'var(--color-danger)',
+                  color: '#fff', borderRadius: '10px', padding: '0 6px', fontSize: '11px'
+                }}>{stats.rejected}</span>
+              )}
             </button>
           ))}
         </div>
@@ -226,7 +269,6 @@ export default function DocumentArchivePage() {
       <div className="two-col-wide-right">
         <div className="table-wrapper">
           {isSearchMode ? (
-            /* Semantic search results — chunk view */
             <table className="table">
               <thead>
                 <tr>
@@ -265,7 +307,6 @@ export default function DocumentArchivePage() {
               </tbody>
             </table>
           ) : (
-            /* Normal document list */
             <table className="table">
               <thead>
                 <tr>
@@ -274,7 +315,7 @@ export default function DocumentArchivePage() {
                   <th>Branch / Type</th>
                   <th>Year</th>
                   <th>Size</th>
-                  <th>Status</th>
+                  <th>Status / Approval</th>
                 </tr>
               </thead>
               <tbody>
@@ -301,6 +342,19 @@ export default function DocumentArchivePage() {
                     <td className="text-muted">{formatFileSize(doc.file_size)}</td>
                     <td>
                       <span className={`badge ${statusBadge(doc)}`}>{statusLabel(doc)}</span>
+                      {doc.is_approved && doc.approver_name && (
+                        <div className="text-xs text-muted" style={{ marginTop: '2px' }}>
+                          ✓ {doc.approver_name}
+                        </div>
+                      )}
+                      {doc.status === 'rejected' && doc.rejector_name && (
+                        <div className="text-xs" style={{ marginTop: '2px', color: 'var(--color-danger)' }}>
+                          ✗ {doc.rejector_name}
+                          {doc.rejection_reason && (
+                            <span title={doc.rejection_reason}> — {doc.rejection_reason.length > 30 ? doc.rejection_reason.slice(0, 30) + '…' : doc.rejection_reason}</span>
+                          )}
+                        </div>
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -323,19 +377,28 @@ export default function DocumentArchivePage() {
               Documents are filtered server-side by HQ, unit, branch, approval state, and rank visibility.
             </p>
           </div>
-          <div className="card-sm">
-            <h3 className="section-title mb-2">Search</h3>
-            <p className="text-sm text-muted mb-2">
-              Typing 2+ characters triggers <strong>semantic vector search</strong> across OCR-indexed content. Short queries fall back to local name filtering.
-            </p>
-          </div>
-          {canSeePending && stats.pending > 0 && (
+
+          {isOfficer && stats.pending > 0 && (
             <div className="info-card amber-card">
               <h3 className="info-card-title">
                 <span className="material-icons" style={{ fontSize: '16px', verticalAlign: 'middle' }}>pending_actions</span>
-                {' '}{stats.pending} Pending
+                {' '}{stats.pending} Pending Review
               </h3>
-              <p className="info-card-text">Switch to the &quot;Pending Approval&quot; tab to review and approve documents uploaded by junior clerks.</p>
+              <p className="info-card-text">
+                Switch to <strong>Pending Review</strong> tab to approve or reject documents uploaded by clerks.
+              </p>
+            </div>
+          )}
+
+          {isClerk && stats.rejected > 0 && (
+            <div className="info-card" style={{ borderLeft: '4px solid var(--color-danger)' }}>
+              <h3 className="info-card-title" style={{ color: 'var(--color-danger)' }}>
+                <span className="material-icons" style={{ fontSize: '16px', verticalAlign: 'middle' }}>cancel</span>
+                {' '}{stats.rejected} Rejected
+              </h3>
+              <p className="info-card-text">
+                Check the <strong>My Uploads</strong> tab to see rejection reasons.
+              </p>
             </div>
           )}
         </div>

@@ -5,6 +5,8 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form, Q
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from sqlalchemy import or_
+
 from app.core.deps import get_current_user, get_db
 from app.models.document import Document
 from app.models.user import User
@@ -14,9 +16,10 @@ from app.models.branch import Branch
 from app.services.minio_service import upload_file, get_file_stream
 from app.core.rbac import get_filter
 from app.core.document_access import require_document_access
-from app.workers.ocr_tasks import process_document
+from app.workers.ocr_tasks import process_document, index_corrected_text
 
 from app.services.minio_service import move_to_deleted
+from app.rag.vector_store.elastic_store import delete_doc_chunks
 from app.models.document_chunks import DocumentChunk
 
 from app.core.audit import audit_action
@@ -26,7 +29,6 @@ router = APIRouter()
 
 
 def _base_dict(doc: Document, db: Session) -> dict:
-    """Shared enrichment: hierarchy names + user names, no OCR text."""
     hq = db.get(HeadQuarter, doc.hq_id) if doc.hq_id else None
     unit = db.get(Unit, doc.unit_id) if doc.unit_id else None
     branch = db.get(Branch, doc.branch_id) if doc.branch_id else None
@@ -53,6 +55,9 @@ def _base_dict(doc: Document, db: Session) -> dict:
         "is_approved": doc.is_approved,
         "approved_by": doc.approved_by,
         "approver_name": approver.name if approver else None,
+        "rejected_by": doc.rejected_by,
+        "rejector_name": db.get(User, doc.rejected_by).name if doc.rejected_by else None,
+        "rejection_reason": doc.rejection_reason,
         "status": doc.status,
         "min_visible_rank": doc.min_visible_rank,
         "delete_requested": doc.delete_requested,
@@ -65,12 +70,10 @@ def _base_dict(doc: Document, db: Session) -> dict:
 
 
 def _enrich_list(doc: Document, db: Session) -> dict:
-    """Lightweight: no OCR text, used in list endpoints."""
     return _base_dict(doc, db)
 
 
 def _enrich(doc: Document, db: Session) -> dict:
-    """Full enrichment including OCR text, used for single-document detail."""
     base = _base_dict(doc, db)
     base["ocr_text"] = doc.ocr_text
     base["corrected_text"] = doc.corrected_text
@@ -176,8 +179,6 @@ def upload_document(
     db.commit()
     db.refresh(doc)
 
-    # Only process immediately if already approved (officer / senior clerk).
-    # Junior clerk uploads wait for officer approval before OCR/indexing.
     if is_approved:
         try:
             process_document.delay(doc.id)
@@ -320,13 +321,36 @@ def approve_document(
     doc.status = "approved"
     db.commit()
 
-    # Now queue OCR/indexing (was held back because junior clerk uploaded)
     try:
         process_document.delay(doc.id)
     except Exception:
         logger.error("Failed to queue OCR task after approval for doc_id=%s", doc.id)
 
     return {"message": "Approved and queued for OCR processing"}
+
+
+# =========================
+# REJECT DOCUMENT
+# =========================
+@audit_action("REJECT_DOCUMENT")
+@router.post("/reject/{doc_id}")
+def reject_document(
+    reason: str = Query(..., min_length=1),
+    doc=Depends(require_document_access("approve")),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if doc.is_approved:
+        raise HTTPException(400, "Document already approved")
+    if doc.status == "rejected":
+        raise HTTPException(400, "Document already rejected")
+
+    doc.rejected_by = user.id
+    doc.rejection_reason = reason
+    doc.status = "rejected"
+    db.commit()
+
+    return {"message": "Document rejected"}
 
 
 # =========================
@@ -354,25 +378,33 @@ def list_documents(
     doc_type: str = Query(None),
     status: str = Query(None),
     year: int = Query(None),
+    my_uploads: bool = Query(False),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     logger.info("Listing documents")
-    filters = get_filter(user)
+
     query = db.query(Document)
 
-    for key, value in filters.items():
-        if value is not None:
-            query = query.filter(getattr(Document, key) == value)
+    if my_uploads:
+        # Only the caller's own uploads, regardless of approval — no RBAC scope filter
+        query = query.filter(Document.uploaded_by == user.id)
+    else:
+        filters = get_filter(user)
+        for key, value in filters.items():
+            if value is not None:
+                query = query.filter(getattr(Document, key) == value)
 
-    if user.role not in ["officer", "unit_admin", "hq_admin", "super_admin"]:
-        query = query.filter(Document.is_approved == True)
+        if user.role not in ["officer", "unit_admin", "hq_admin", "super_admin"]:
+            # Clerks/trainees see approved docs OR their own pending/rejected uploads
+            query = query.filter(
+                or_(Document.is_approved == True, Document.uploaded_by == user.id)
+            )
 
     query = query.filter(Document.is_deleted == False)
 
-    # Optional filters
     if branch_name:
         query = query.filter(Document.branch_name.ilike(f"%{branch_name}%"))
     if doc_type:
@@ -413,6 +445,39 @@ def update_text(
 
 
 # =========================
+# INDEX WITH CORRECTED TEXT
+# Indexes saved corrected_text (or ocr_text fallback) into Elasticsearch
+# WITHOUT re-running OCR. Use this after editing OCR output.
+# =========================
+@audit_action("INDEX_TEXT_DOCUMENT")
+@router.post("/index-text/{doc_id}")
+def index_text_document(
+    doc=Depends(require_document_access("view")),
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if user.role not in ["officer", "clerk", "unit_admin", "hq_admin", "super_admin"]:
+        raise HTTPException(403, "Insufficient permissions")
+
+    if not doc.is_approved:
+        raise HTTPException(400, "Document must be approved before indexing")
+
+    raw_text = (doc.corrected_text or doc.ocr_text or "").strip()
+    if not raw_text:
+        raise HTTPException(400, "No text to index. Run OCR first.")
+
+    doc.status = "processing"
+    db.commit()
+
+    try:
+        index_corrected_text.delay(doc.id)
+    except Exception as e:
+        raise HTTPException(500, f"Could not queue indexing: {e}")
+
+    return {"message": "Queued for indexing with corrected text", "doc_id": doc.id}
+
+
+# =========================
 # DOWNLOAD DOCUMENT
 # =========================
 @audit_action("DOWNLOAD_DOCUMENT")
@@ -435,7 +500,7 @@ def download_document(
 
 
 # =========================
-# RE-INDEX DOCUMENT
+# RE-INDEX DOCUMENT (re-runs full OCR pipeline)
 # =========================
 @audit_action("RE-INDEX_DOCUMENT")
 @router.post("/reindex/{doc_id}")
@@ -451,12 +516,10 @@ def reindex_document(
     if not doc_obj:
         raise HTTPException(404, "Document not found")
 
-    # Auto-approve if an officer/admin re-queues an unapproved document
     if not doc_obj.is_approved:
         doc_obj.is_approved = True
         doc_obj.approved_by = user.id
 
-    # Reset to uploaded so worker picks it up cleanly
     doc_obj.status = "uploaded"
     db.commit()
 
@@ -478,23 +541,11 @@ def reindex_document(
 @audit_action("DELETE_DOCUMENT")
 @router.delete("/delete/{doc_id}")
 def delete_document(
-    doc=Depends(require_document_access("view")),
+    doc=Depends(require_document_access("delete")),
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    # Officer or Senior Clerk → direct delete
-    if user.role == "officer" or (
-        user.role == "clerk" and user.clerk_type == "senior"
-    ):
-        new_path = move_to_deleted(doc.minio_path)
-        doc.minio_path = new_path
-        doc.is_deleted = True
-        doc.deleted_by = user.id
-        doc.status = "deleted"
-        db.commit()
-        return {"message": "Document deleted"}
-
-    # Junior Clerk → request delete
+    # Junior Clerk → request delete (checked before direct delete)
     if user.role == "clerk" and user.clerk_type == "junior":
         doc.delete_requested = True
         doc.delete_requested_by = user.id
@@ -502,7 +553,23 @@ def delete_document(
         db.commit()
         return {"message": "Delete request submitted for officer approval"}
 
-    raise HTTPException(403, "Not allowed")
+    # Officer / Senior Clerk / Admins → direct delete (RBAC already verified in require_document_access)
+    delete_doc_chunks(doc.id)
+
+    db.query(DocumentChunk).filter(
+        DocumentChunk.document_id == doc.id
+    ).delete()
+
+    new_path = move_to_deleted(doc.minio_path)
+
+    doc.minio_path = new_path
+    doc.is_deleted = True
+    doc.deleted_by = user.id
+    doc.status = "deleted"
+
+    db.commit()
+
+    return {"message": "Document deleted (MinIO + ES + DB)"}
 
 
 # =========================
@@ -518,21 +585,22 @@ def approve_delete(
     if not doc.delete_requested:
         raise HTTPException(400, "No delete request found")
 
-    if user.role not in ["officer"] and not (
-        user.role == "clerk" and user.clerk_type == "senior"
-    ):
-        raise HTTPException(403, "Not allowed")
+    delete_doc_chunks(doc.id)
+
+    db.query(DocumentChunk).filter(
+        DocumentChunk.document_id == doc.id
+    ).delete()
 
     new_path = move_to_deleted(doc.minio_path)
-    db.query(DocumentChunk).filter(DocumentChunk.document_id == doc.id).delete()
 
     doc.minio_path = new_path
     doc.is_deleted = True
     doc.deleted_by = user.id
     doc.status = "deleted"
+
     db.commit()
 
-    return {"message": "Delete approved and file moved"}
+    return {"message": "Delete approved (MinIO + ES + DB cleaned)"}
 
 
 # =========================

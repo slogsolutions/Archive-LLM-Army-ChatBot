@@ -25,7 +25,51 @@ def _ext(filename: str) -> str:
     retry_backoff=True,
     retry_kwargs={"max_retries": 3}
 )
-def process_document(doc_id: int):
+def index_corrected_text(self, doc_id: int):
+    """
+    Celery task: index corrected_text (or ocr_text fallback) into Elasticsearch
+    WITHOUT re-running OCR. Used after a user edits OCR output.
+    """
+    print(f"[WORKER] index_corrected_text doc_id={doc_id}")
+    db = SessionLocal()
+
+    try:
+        doc = db.get(Document, doc_id)
+        if not doc:
+            print(f"[WORKER] doc_id={doc_id} not found")
+            return
+
+        raw_text = (doc.corrected_text or doc.ocr_text or "").strip()
+        if not raw_text:
+            print(f"[WORKER] doc_id={doc_id}: no text to index")
+            doc.status = "error"
+            db.commit()
+            return
+
+        count = ingest_document(doc)
+        doc.status = "indexed" if count > 0 else "reviewed"
+        db.commit()
+
+        print(f"[WORKER] index_corrected_text done doc_id={doc_id}, chunks={count}")
+
+    except Exception as e:
+        print(f"[WORKER] index_corrected_text error doc_id={doc_id}: {e}")
+        try:
+            doc.status = "error"
+            db.commit()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 3}
+)
+def process_document(self, doc_id: int):
     """
     Celery task: download → parse/OCR → save text → RAG ingest.
 

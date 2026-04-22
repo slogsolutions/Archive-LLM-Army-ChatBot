@@ -48,12 +48,19 @@ def search(
         top_k:   number of results to return
         user:    authenticated user object (used for RBAC scoping)
     """
+    
     if not query or not query.strip():
         return []
 
     # ── 1. Parse & normalise query ─────────────────────────────────────────
+    print("🔎 Step 1: Parsing query")
+    
+    
     parsed = parse_query(query)
+    print("🔎 Clean query:", parsed["query"])
+    print("🔎 Filters:", parsed["filters"])
     clean_query = parsed["query"]
+    
 
     # Merge inline filters with explicit filters (explicit take priority)
     effective_filters: dict = {}
@@ -64,7 +71,8 @@ def search(
             effective_filters[k] = v
 
     # ── 2. RBAC filter clauses ─────────────────────────────────────────────
-    rbac_clauses: list[dict] = []
+    from app.rag.retriever.rbac_filter import build_rbac_filter
+    rbac_clauses = build_rbac_filter(user)
     if user:
         rank = getattr(user, "rank_level", 6)
         # Only documents visible to this rank level
@@ -79,10 +87,13 @@ def search(
                 rbac_clauses.append({"term": {"unit_id": user.unit_id}})
 
     # ── 3. Embed query ─────────────────────────────────────────────────────
+    print("🔎 Step 2: Generating embedding...")
     embeddings = get_embeddings([clean_query])
     query_embedding = embeddings[0]
+    print("🔎 Embedding generated")
 
     # ── 4. Hybrid search (retrieve 2× for reranking headroom) ─────────────
+    print("🔎 Step 3: Searching Elasticsearch...")
     hits = hybrid_search(
         query_text=clean_query,
         query_embedding=query_embedding,
@@ -93,8 +104,9 @@ def search(
 
     if not hits:
         return []
-
+    print("🔎 ES hits:", len(hits))
     # ── 5. Deserialise hits ────────────────────────────────────────────────
+    print(" Deserialise hits")
     results: List[SearchResult] = []
     for hit in hits:
         src = hit.get("_source", {})
@@ -113,7 +125,8 @@ def search(
             hq_id=src.get("hq_id"),
             unit_id=src.get("unit_id"),
         ))
-
+  
     # ── 6. Rerank & truncate ───────────────────────────────────────────────
+    print(" Rerank & truncate")
     results = rerank(clean_query, query_embedding, results)
     return results[:top_k]

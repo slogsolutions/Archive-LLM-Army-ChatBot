@@ -3,6 +3,15 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { api, formatRole } from '../lib/api';
 
+// Roles that can see each nav item. Omit a role to hide that item from them.
+const NAV_RBAC = {
+  '/dashboard': ['super_admin', 'hq_admin', 'unit_admin', 'officer', 'clerk', 'trainee'],
+  '/archive':   ['super_admin', 'hq_admin', 'unit_admin', 'officer', 'clerk', 'trainee'],
+  '/uploads':   ['super_admin', 'hq_admin', 'unit_admin', 'officer', 'clerk'],
+  '/hierarchy': ['super_admin', 'hq_admin', 'unit_admin', 'officer'],
+  '/users':     ['super_admin', 'hq_admin', 'unit_admin'],
+};
+
 const navItems = [
   { href: '/dashboard', icon: 'dashboard',     label: 'Dashboard' },
   { href: '/archive',   icon: 'inventory_2',   label: 'Archive' },
@@ -21,6 +30,9 @@ export default function Sidebar({ user }) {
   };
 
   const initial = user?.name?.charAt(0)?.toUpperCase() || user?.army_number?.charAt(0)?.toUpperCase() || 'A';
+  const role = user?.role || '';
+
+  const visibleItems = navItems.filter(item => NAV_RBAC[item.href]?.includes(role));
 
   return (
     <aside className="sidebar">
@@ -30,7 +42,7 @@ export default function Sidebar({ user }) {
       </div>
 
       <nav className="sidebar-nav">
-        {navItems.map((item) => {
+        {visibleItems.map((item) => {
           const isActive =
             pathname === item.href ||
             (item.href === '/archive' && pathname.startsWith('/archive'));

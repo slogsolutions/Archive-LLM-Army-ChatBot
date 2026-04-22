@@ -167,9 +167,11 @@ export const api = {
   },
   getDocument: (id) => request(`/documents/${id}`),
   approveDocument: (id) => request(`/documents/approve/${id}`, { method: 'POST' }),
+  rejectDocument: (id, reason) => request(`/documents/reject/${id}?reason=${encodeURIComponent(reason)}`, { method: 'POST' }),
   approveDelete: (id) => request(`/documents/approve-delete/${id}`, { method: 'POST' }),
   requestDelete: (id) => request(`/documents/delete/${id}`, { method: 'DELETE' }),
   reindexDocument: (id) => request(`/documents/reindex/${id}`, { method: 'POST' }),
+  indexDocumentText: (id) => request(`/documents/index-text/${id}`, { method: 'POST' }),
   updateDocumentText: (id, text) => request(`/documents/update-text/${id}?text=${encodeURIComponent(text)}`, { method: 'PUT' }),
   searchDocuments: (query, filters = {}) => {
     const q = new URLSearchParams({ query });

@@ -10,6 +10,7 @@ INDEX_NAME = "army_documents"
 # Dimension must match the local embedding model (BAAI/bge-base-en = 768)
 EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "768"))
 
+
 _INDEX_MAPPING = {
     "settings": {
         "number_of_shards": 1,
@@ -67,6 +68,8 @@ def ensure_index(es: Elasticsearch = None, dim: int = None) -> Elasticsearch:
         es = get_es()
 
     mapping = _INDEX_MAPPING
+    
+    
     if dim and dim != EMBEDDING_DIM:
         import copy
         mapping = copy.deepcopy(_INDEX_MAPPING)
@@ -75,6 +78,7 @@ def ensure_index(es: Elasticsearch = None, dim: int = None) -> Elasticsearch:
     if not es.indices.exists(index=INDEX_NAME):
         es.indices.create(index=INDEX_NAME, body=mapping)
         print(f"[ES] Created index '{INDEX_NAME}' with dim={dim or EMBEDDING_DIM}")
+        
 
     return es
 
