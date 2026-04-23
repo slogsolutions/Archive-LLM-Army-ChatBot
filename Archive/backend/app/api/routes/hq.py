@@ -3,11 +3,12 @@ from sqlalchemy.orm import Session
 from app.core.deps import get_current_user, get_db
 from app.models.hq import HeadQuarter
 from app.models.unit import Unit
-
+from app.core.audit import audit_action
 router = APIRouter()
 
 
 @router.get("/")
+@audit_action("GET_HQ")
 def list_hq(user=Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role == "super_admin":
         return db.query(HeadQuarter).order_by(HeadQuarter.name).all()
@@ -20,6 +21,7 @@ def list_hq(user=Depends(get_current_user), db: Session = Depends(get_db)):
 
 
 @router.post("/create")
+@audit_action("CREATE_HQ")
 def create_hq(data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
 
     if user.role != "super_admin":
@@ -28,11 +30,13 @@ def create_hq(data: dict, user=Depends(get_current_user), db: Session = Depends(
     hq = HeadQuarter(name=data.get("name"))
     db.add(hq)
     db.commit()
+    db.refresh(hq)
 
-    return {"message": "HQ created"}
+    return {"message": f"HQ '{hq.name}' created", "id": hq.id, "name": hq.name}
 
 
 @router.put("/update/{hq_id}")
+@audit_action("UPDATE_HQ")
 def update_hq(hq_id: int, data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role != "super_admin":
         raise HTTPException(403, "Only super admin allowed")
@@ -52,6 +56,7 @@ def update_hq(hq_id: int, data: dict, user=Depends(get_current_user), db: Sessio
 
 
 @router.delete("/delete/{hq_id}")
+@audit_action("DELETE_HQ")
 def delete_hq(hq_id: int, user=Depends(get_current_user), db: Session = Depends(get_db)):
     if user.role != "super_admin":
         raise HTTPException(403, "Only super admin allowed")

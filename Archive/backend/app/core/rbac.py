@@ -19,16 +19,38 @@ def check_access(user, document, action: str = "view"):
     if not user or not document:
         return False
 
+    # 🔥 DELETE / APPROVE (HANDLE FIRST)
+    if action == "delete":
+        if user.role in ["officer", "unit_admin", "hq_admin", "super_admin"]:
+            return True
+
+        if user.role == "clerk":
+            if user.clerk_type == "senior":
+                return True
+            if user.clerk_type == "junior":
+                return user.id == document.uploaded_by
+
+        return False
+
+    if action == "approve":
+        return user.role in ["officer", "unit_admin", "hq_admin", "super_admin"]
+
     # =========================
-    # 🔥 APPROVAL BLOCK (FIXED)
-    # =========================
+#  OWNER OVERRIDE (FIRST)
+# =========================
+    if user.id == document.uploaded_by:
+        return True
+
+# =========================
+#  APPROVAL BLOCK
+# =========================
     if not document.is_approved and user.role not in [
         "officer", "unit_admin", "hq_admin", "super_admin"
-    ]:
+]:
         return False
 
     # =========================
-    # 🔥 VISIBILITY BLOCK
+    # 🔥 VISIBILITY
     # =========================
     if user.rank_level > document.min_visible_rank:
         return False
@@ -47,9 +69,6 @@ def check_access(user, document, action: str = "view"):
 
     # OFFICER
     if user.role == "officer":
-        if action in ["delete", "approve"]:
-            return True
-
         return (
             user.unit_id == document.unit_id and
             user.branch_id == document.branch_id
@@ -57,9 +76,6 @@ def check_access(user, document, action: str = "view"):
 
     # CLERK
     if user.role == "clerk":
-        if action in ["delete", "approve"]:
-            return False
-
         return (
             user.unit_id == document.unit_id and
             user.branch_id == document.branch_id and
@@ -71,8 +87,6 @@ def check_access(user, document, action: str = "view"):
         return user.id == document.uploaded_by
 
     return False
-
-
 
 # =========================
 # 2. FILTER (Multiple Docs)
@@ -109,8 +123,6 @@ def get_filter(user):
         return {"uploaded_by": user.id}
 
     return {"id": None}
-
-
 
 # =========================
 # 3. USAGE EXAMPLES

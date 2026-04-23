@@ -6,12 +6,24 @@ from app.services.auth_service import hash_password
 
 router = APIRouter()
 
+# audiut import 
+from app.core.audit import audit_action
+
+# LOGGER 
+from app.core.logger import logger
+
+router = APIRouter()
+
+
+
 
 # =========================
 # CREATE USER
 # =========================
 
+
 @router.post("/create")
+@audit_action("CREATE_USER")
 def create_user(
     data: dict,
     current_user: User = Depends(get_current_user),
@@ -78,31 +90,51 @@ def create_user(
 
     db.add(new_user)
     db.commit()
+    db.refresh(new_user)
 
-    return {"message": "User created"}
+    return {"message": f"User '{new_user.name}' ({new_user.role}) created", "id": new_user.id}
+
+def _safe_user(u: User) -> dict:
+    return {
+        "id": u.id,
+        "army_number": u.army_number,
+        "name": u.name,
+        "role": u.role,
+        "rank_level": u.rank_level,
+        "hq_id": u.hq_id,
+        "unit_id": u.unit_id,
+        "branch_id": u.branch_id,
+        "clerk_type": u.clerk_type,
+        "task_category": u.task_category,
+    }
+
 
 # =========================
 # GET ALL USERS (SCOPED)
 # =========================
 
 @router.get("/")
+@audit_action("GET_ALL_USER")
 def get_users(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
 
     if current_user.role == "super_admin":
-        return db.query(User).all()
+        return [_safe_user(u) for u in db.query(User).all()]
 
     if current_user.role == "hq_admin":
-        return db.query(User).filter(User.hq_id == current_user.hq_id).all()
+        return [_safe_user(u) for u in db.query(User).filter(User.hq_id == current_user.hq_id).all()]
 
     if current_user.role == "unit_admin":
-        return db.query(User).filter(User.unit_id == current_user.unit_id).all()
+        return [_safe_user(u) for u in db.query(User).filter(User.unit_id == current_user.unit_id).all()]
 
     raise HTTPException(403, "Not allowed")
 
 # =========================
 # GET SINGLE USER
 # =========================
+
+
 @router.get("/{user_id}")
+@audit_action("GET_SINGLE_USER")
 def get_user(
     user_id: int,
     current_user: User = Depends(get_current_user),
@@ -114,21 +146,22 @@ def get_user(
     if not user:
         raise HTTPException(404, "User not found")
 
-    # simple scope check
     if current_user.role == "hq_admin" and user.hq_id != current_user.hq_id:
         raise HTTPException(403, "Not allowed")
 
     if current_user.role == "unit_admin" and user.unit_id != current_user.unit_id:
         raise HTTPException(403, "Not allowed")
 
-    return user
+    return _safe_user(user)
 
 
 # =========================
 # UPDATE USER
 # =========================
 
+
 @router.put("/update/{user_id}")
+@audit_action("UDPATE_USER")
 def update_user(
     user_id: int,
     data: dict,
@@ -177,7 +210,10 @@ def update_user(
 # =========================
 # DELETE USER
 # =========================
+
+
 @router.delete("/delete/{user_id}")
+@audit_action("DELETE_USER")
 def delete_user(
     user_id: int,
     current_user: User = Depends(get_current_user),

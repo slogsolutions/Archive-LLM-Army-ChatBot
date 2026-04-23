@@ -109,7 +109,7 @@ function uploadDocument(payload) {
   data.append('branch', payload.branch);
   data.append('document_type', payload.document_type);
 
-  ['hq_id', 'unit_id', 'branch_id', 'min_visible_rank'].forEach((key) => {
+  ['hq_id', 'unit_id', 'branch_id', 'section', 'year', 'min_visible_rank'].forEach((key) => {
     if (payload[key] !== undefined && payload[key] !== null && payload[key] !== '') {
       data.append(key, String(payload[key]));
     }
@@ -159,11 +159,27 @@ export const api = {
   createUser: (payload) => request('/users/create', { method: 'POST', body: JSON.stringify(normalizeUser(payload)) }),
   updateUser: (id, payload) => request(`/users/update/${id}`, { method: 'PUT', body: JSON.stringify(normalizeUser(payload, { includeBlankPassword: false })) }),
   deleteUser: (id) => request(`/users/delete/${id}`, { method: 'DELETE' }),
-  listDocuments: () => request('/documents/'),
+  listDocuments: (params = {}) => {
+    const q = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') q.set(k, v); });
+    const qs = q.toString();
+    return request(`/documents/${qs ? `?${qs}` : ''}`);
+  },
   getDocument: (id) => request(`/documents/${id}`),
   approveDocument: (id) => request(`/documents/approve/${id}`, { method: 'POST' }),
+  rejectDocument: (id, reason) => request(`/documents/reject/${id}?reason=${encodeURIComponent(reason)}`, { method: 'POST' }),
+  approveDelete: (id) => request(`/documents/approve-delete/${id}`, { method: 'POST' }),
+  requestDelete: (id) => request(`/documents/delete/${id}`, { method: 'DELETE' }),
+  reindexDocument: (id) => request(`/documents/reindex/${id}`, { method: 'POST' }),
+  indexDocumentText: (id) => request(`/documents/index-text/${id}`, { method: 'POST' }),
   updateDocumentText: (id, text) => request(`/documents/update-text/${id}?text=${encodeURIComponent(text)}`, { method: 'PUT' }),
-  searchDocuments: (query) => request(`/documents/search?query=${encodeURIComponent(query)}`),
+  searchDocuments: (query, filters = {}) => {
+    const q = new URLSearchParams({ query });
+    Object.entries(filters).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') q.set(k, v); });
+    return request(`/documents/search?${q.toString()}`);
+  },
+  listPendingApprovals: () => request('/documents/pending-approvals'),
+  listPendingDeletions: () => request('/documents/pending-deletions'),
   uploadDocument,
   downloadDocument,
   downloadUrl: (id) => `${API_BASE_URL}/documents/download/${id}`,

@@ -4,6 +4,15 @@ import { useEffect, useMemo, useState } from 'react';
 import AppLayout from '../components/AppLayout';
 import { api, formatRole } from '../lib/api';
 
+const ROLE_RANK = {
+  super_admin: 1,
+  hq_admin: 2,
+  unit_admin: 3,
+  officer: 4,
+  clerk: 5,
+  trainee: 6,
+};
+
 const emptyUser = {
   army_number: '',
   name: '',
@@ -73,6 +82,11 @@ export default function UserManagementPage() {
   const updateUserForm = (key, value) => {
     setUserForm((current) => {
       const next = { ...current, [key]: value };
+
+      // Auto-fill rank_level when role changes (only when not editing)
+      if (key === 'role' && ROLE_RANK[value] !== undefined) {
+        next.rank_level = ROLE_RANK[value];
+      }
 
       if (key === 'hq_id') {
         next.unit_id = '';
@@ -231,8 +245,20 @@ export default function UserManagementPage() {
                 </select>
               </div>
               <div className="form-group">
-                <label className="form-label">Rank Level</label>
-                <input type="number" min="1" max="6" className="form-input" value={userForm.rank_level} onChange={(event) => updateUserForm('rank_level', event.target.value)} required />
+                <label className="form-label">
+                  Rank Level
+                  <span className="text-xs text-muted" style={{ fontWeight: 400, marginLeft: 4 }}>(auto)</span>
+                </label>
+                <input
+                  type="number"
+                  min="1"
+                  max="6"
+                  className="form-input"
+                  value={userForm.rank_level}
+                  onChange={(event) => updateUserForm('rank_level', event.target.value)}
+                  required
+                  style={{ background: 'var(--color-surface-low)' }}
+                />
               </div>
             </div>
 

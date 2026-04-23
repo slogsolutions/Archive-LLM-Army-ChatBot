@@ -1,42 +1,70 @@
 from sentence_transformers import SentenceTransformer
 import os
+from pathlib import Path
 
-# 🔥 FORCE OFFLINE MODE
+# 🔥 OFFLINE MODE
 os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 _model = None
 
 
 def get_model():
+
     global _model
 
     if _model is None:
-        print("🚀 Loading embedding model (offline)...")
+        print("🚀 Loading embedding model...")
 
-        try:
-            _model = SentenceTransformer("BAAI/bge-base-en")
+        # ✅ ALWAYS USE PROJECT ROOT (where you run python)
+        BASE_DIR = Path.cwd()
 
-            print("✅ Model loaded from local cache")
+        print("📁 Current Working Dir:", BASE_DIR)
 
-        except Exception as e:
-            print("❌ MODEL LOAD FAILED:", str(e))
-            raise RuntimeError(
-                "Embedding model not found locally. "
-                "Run once with internet to cache it."
-            )
+        model_path = BASE_DIR / "app" / "ml_models" / "embedding"
+
+        print("📂 Exists:", model_path.exists())
+        print("📂 Files:", list(model_path.glob("*")))
+
+        if not model_path.exists():
+            raise RuntimeError(f"❌ Model NOT FOUND at: {model_path}")
+
+        import time
+        start = time.time()
+
+        _model = SentenceTransformer(str(model_path))
+
+        print(f"✅ Model loaded in {round(time.time() - start, 2)} sec")
 
     return _model
 
 
-def get_embeddings(texts: list[str]):
+
+
+
+
+
+
+def get_embeddings(texts):
+    print("🧠 get_embeddings called")
+
     model = get_model()
+
+    print("🧠 Model ready, encoding...")
 
     if not texts:
         return []
 
-    return model.encode(
+    if isinstance(texts, str):
+        texts = [texts]
+
+    embeddings = model.encode(
         texts,
         batch_size=32,
         normalize_embeddings=True,
-        show_progress_bar=False
-    ).tolist()
+        show_progress_bar=True
+    )
+
+    print("🧠 Encoding done")
+
+    return embeddings.tolist()

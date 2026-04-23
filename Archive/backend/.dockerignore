@@ -1,0 +1,17 @@
+venv310
+__pycache__
+*.pyc
+.git
+.env
+node_modules
+.next
+
+# ML Models
+ml_models/
+*.safetensors
+*.bin
+
+
+Archive/backend/ml_models/
+*.safetensors
+*.bin

@@ -3,6 +3,8 @@ from sqlalchemy.sql import func
 from app.core.database import Base
 
 
+
+
 class Document(Base):
     __tablename__ = "documents"
 
@@ -22,6 +24,10 @@ class Document(Base):
 
     document_type_id = Column(Integer)
 
+    # VERSIONING 
+    version = Column(Integer, default=1)
+    parent_id = Column(Integer, nullable=True)
+
     # ✅ HUMAN READABLE METADATA (IMPORTANT)
     branch_name = Column(String, nullable=False)
     document_type_name = Column(String, nullable=False)
@@ -33,6 +39,13 @@ class Document(Base):
 
     # UPLOAD
     uploaded_by = Column(Integer)
+    
+    # RBAC FOR DELETE
+    delete_requested = Column(Boolean, default=False)
+    delete_requested_by = Column(Integer, nullable=True)
+
+    is_deleted = Column(Boolean, default=False)
+    deleted_by = Column(Integer, nullable=True)
 
     # APPROVAL
     is_approved = Column(Boolean, default=False)

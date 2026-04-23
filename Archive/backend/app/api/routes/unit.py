@@ -4,27 +4,50 @@ from app.models.unit import Unit
 from app.models.branch import Branch
 from app.core.deps import get_current_user, get_db
 
+
+# audiut import 
+from app.core.audit import audit_action
+
+# LOGGER 
+from app.core.logger import logger
+
 router = APIRouter()
 
 
+def _unit_dict(unit, hqs) -> dict:
+    hq = next((h for h in hqs if h.id == unit.hq_id), None)
+    return {
+        "id": unit.id,
+        "name": unit.name,
+        "hq_id": unit.hq_id,
+        "hq_name": hq.name if hq else None,
+    }
+
+
 @router.get("/")
+@audit_action("LIST_UNIT")
 def list_units(user=Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.models.hq import HeadQuarter
+    hqs = db.query(HeadQuarter).all()
     query = db.query(Unit)
 
     if user.role == "super_admin":
-        return query.order_by(Unit.name).all()
-
-    if user.role == "hq_admin":
-        return query.filter(Unit.hq_id == user.hq_id).order_by(Unit.name).all()
-
-    if user.unit_id:
+        units = query.order_by(Unit.name).all()
+    elif user.role == "hq_admin":
+        units = query.filter(Unit.hq_id == user.hq_id).order_by(Unit.name).all()
+    elif user.unit_id:
         unit = db.get(Unit, user.unit_id)
-        return [unit] if unit else []
+        units = [unit] if unit else []
+    else:
+        units = []
 
-    return []
+    return [_unit_dict(u, hqs) for u in units]
+
+
 
 
 @router.post("/create")
+@audit_action("CREATE_UNIT")
 def create_unit(data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
 
     if user.role not in ["super_admin", "hq_admin"]:
@@ -41,11 +64,13 @@ def create_unit(data: dict, user=Depends(get_current_user), db: Session = Depend
 
     db.add(unit)
     db.commit()
+    db.refresh(unit)
 
-    return {"message": "Unit created"}
+    return {"message": f"Unit '{unit.name}' created", "id": unit.id, "name": unit.name}
 
 
 @router.put("/update/{unit_id}")
+@audit_action("UPDATE_UNIT")
 def update_unit(unit_id: int, data: dict, user=Depends(get_current_user), db: Session = Depends(get_db)):
     unit = db.get(Unit, unit_id)
     if not unit:
@@ -74,6 +99,7 @@ def update_unit(unit_id: int, data: dict, user=Depends(get_current_user), db: Se
 
 
 @router.delete("/delete/{unit_id}")
+@audit_action("DELETE_UNIT")
 def delete_unit(unit_id: int, user=Depends(get_current_user), db: Session = Depends(get_db)):
     unit = db.get(Unit, unit_id)
     if not unit:
