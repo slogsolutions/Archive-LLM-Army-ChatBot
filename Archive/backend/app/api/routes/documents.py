@@ -379,6 +379,7 @@ def list_documents(
     status: str = Query(None),
     year: int = Query(None),
     my_uploads: bool = Query(False),
+    uploader_role: str = Query(None),
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     user=Depends(get_current_user),
@@ -391,6 +392,19 @@ def list_documents(
     if my_uploads:
         # Only the caller's own uploads, regardless of approval — no RBAC scope filter
         query = query.filter(Document.uploaded_by == user.id)
+    elif uploader_role:
+        # Officers/admins viewing all docs uploaded by a specific role (e.g. clerks)
+        if user.role not in ["officer", "unit_admin", "hq_admin", "super_admin"]:
+            raise HTTPException(403, "Not allowed")
+        scope = get_filter(user)
+        for key, value in scope.items():
+            if value is not None:
+                query = query.filter(getattr(Document, key) == value)
+        uploader_ids = [u.id for u in db.query(User.id).filter(User.role == uploader_role).all()]
+        if uploader_ids:
+            query = query.filter(Document.uploaded_by.in_(uploader_ids))
+        else:
+            query = query.filter(False)
     else:
         filters = get_filter(user)
         for key, value in filters.items():
@@ -411,7 +425,9 @@ def list_documents(
         query = query.filter(Document.document_type_name.ilike(f"%{doc_type}%"))
     if status:
         if status == "pending":
-            query = query.filter(Document.is_approved == False)
+            query = query.filter(Document.is_approved == False, Document.status != "rejected")
+        elif status == "rejected":
+            query = query.filter(Document.status == "rejected")
         elif status == "delete_requested":
             query = query.filter(Document.delete_requested == True)
         else:

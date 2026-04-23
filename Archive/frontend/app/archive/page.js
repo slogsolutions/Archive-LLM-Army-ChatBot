@@ -1,13 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import AppLayout from '../components/AppLayout';
 import { api, formatFileSize } from '../lib/api';
 
 // Tabs shown to each role category
 const OFFICER_TABS = [
   { key: 'all',              label: 'All' },
+  { key: 'clerk_uploads',    label: 'Clerk Uploads' },
   { key: 'pending',          label: 'Pending Review' },
   { key: 'indexed',          label: 'Indexed' },
   { key: 'processed',        label: 'Processed' },
@@ -17,6 +18,8 @@ const OFFICER_TABS = [
 const CLERK_TABS = [
   { key: 'all',       label: 'All' },
   { key: 'my_uploads', label: 'My Uploads' },
+  { key: 'pending',   label: 'Pending Approval' },
+  { key: 'rejected',  label: 'Rejected' },
   { key: 'indexed',   label: 'Indexed' },
   { key: 'processed', label: 'Processed' },
 ];
@@ -50,6 +53,7 @@ function statusLabel(doc) {
 
 export default function DocumentArchivePage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const user = api.getUser();
   const role = user?.role || '';
 
@@ -58,7 +62,11 @@ export default function DocumentArchivePage() {
   const [documents, setDocuments] = useState([]);
   const [searchResults, setSearchResults] = useState(null);
   const [query, setQuery] = useState('');
-  const [activeTab, setActiveTab] = useState('all');
+  const [activeTab, setActiveTab] = useState(() => {
+    const tabParam = searchParams?.get('tab');
+    const validKeys = tabs.map((t) => t.key);
+    return tabParam && validKeys.includes(tabParam) ? tabParam : 'all';
+  });
   const [filterBranch, setFilterBranch] = useState('');
   const [filterDocType, setFilterDocType] = useState('');
   const [filterYear, setFilterYear] = useState('');
@@ -78,7 +86,17 @@ export default function DocumentArchivePage() {
     if (tab === 'my_uploads') {
       params.my_uploads = true;
     } else if (tab === 'pending') {
-      params.status = 'pending';
+      if (role === 'clerk') {
+        params.my_uploads = true;
+        params.status = 'pending';
+      } else {
+        params.status = 'pending';
+      }
+    } else if (tab === 'rejected') {
+      params.my_uploads = true;
+      params.status = 'rejected';
+    } else if (tab === 'clerk_uploads') {
+      params.uploader_role = 'clerk';
     } else if (tab === 'delete_requested') {
       params.status = 'delete_requested';
     } else if (tab !== 'all') {
@@ -253,6 +271,18 @@ export default function DocumentArchivePage() {
                   color: '#fff', borderRadius: '10px', padding: '0 6px', fontSize: '11px'
                 }}>{stats.rejected}</span>
               )}
+              {tab.key === 'pending' && isClerk && stats.pending > 0 && (
+                <span style={{
+                  marginLeft: '6px', background: 'var(--color-warning)',
+                  color: '#fff', borderRadius: '10px', padding: '0 6px', fontSize: '11px'
+                }}>{stats.pending}</span>
+              )}
+              {tab.key === 'rejected' && stats.rejected > 0 && (
+                <span style={{
+                  marginLeft: '6px', background: 'var(--color-danger)',
+                  color: '#fff', borderRadius: '10px', padding: '0 6px', fontSize: '11px'
+                }}>{stats.rejected}</span>
+              )}
             </button>
           ))}
         </div>
@@ -313,6 +343,7 @@ export default function DocumentArchivePage() {
                   <th>Document</th>
                   <th>HQ / Unit</th>
                   <th>Branch / Type</th>
+                  {isOfficer && <th>Uploaded By</th>}
                   <th>Year</th>
                   <th>Size</th>
                   <th>Status / Approval</th>
@@ -338,6 +369,9 @@ export default function DocumentArchivePage() {
                       <div>{doc.branch_name || '-'}</div>
                       <div className="text-xs text-muted">{doc.document_type_name || '-'}</div>
                     </td>
+                    {isOfficer && (
+                      <td className="text-muted text-sm">{doc.uploader_name || '-'}</td>
+                    )}
                     <td className="text-muted">{doc.year || '-'}</td>
                     <td className="text-muted">{formatFileSize(doc.file_size)}</td>
                     <td>
@@ -351,7 +385,7 @@ export default function DocumentArchivePage() {
                         <div className="text-xs" style={{ marginTop: '2px', color: 'var(--color-danger)' }}>
                           ✗ {doc.rejector_name}
                           {doc.rejection_reason && (
-                            <span title={doc.rejection_reason}> — {doc.rejection_reason.length > 30 ? doc.rejection_reason.slice(0, 30) + '…' : doc.rejection_reason}</span>
+                            <span title={doc.rejection_reason}> — {doc.rejection_reason.length > 40 ? doc.rejection_reason.slice(0, 40) + '…' : doc.rejection_reason}</span>
                           )}
                         </div>
                       )}

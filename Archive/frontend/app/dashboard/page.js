@@ -22,7 +22,10 @@ export default function DashboardPage() {
   const isAdmin = user && ['super_admin', 'hq_admin', 'unit_admin'].includes(user.role);
   const isOfficerOrAdmin = user && ['officer', 'unit_admin', 'hq_admin', 'super_admin'].includes(user.role);
 
+  const isClerk = user && user.role === 'clerk';
+
   const [documents, setDocuments] = useState([]);
+  const [myUploads, setMyUploads] = useState([]);
   const [users, setUsers] = useState([]);
   const [pendingApprovals, setPendingApprovals] = useState([]);
   const [pendingDeletions, setPendingDeletions] = useState([]);
@@ -38,6 +41,7 @@ export default function DashboardPage() {
           api.listDocuments({ limit: 100 }).catch(() => []),
         ];
 
+        if (isClerk) promises.push(api.listDocuments({ my_uploads: true, limit: 100 }).catch(() => []));
         if (isAdmin) promises.push(api.listUsers().catch(() => []));
         if (isOfficerOrAdmin) {
           promises.push(api.listPendingApprovals().catch(() => []));
@@ -49,6 +53,7 @@ export default function DashboardPage() {
 
         setDocuments(Array.isArray(results[0]) ? results[0] : []);
         let offset = 1;
+        if (isClerk) { setMyUploads(Array.isArray(results[offset]) ? results[offset] : []); offset++; }
         if (isAdmin) { setUsers(Array.isArray(results[offset]) ? results[offset] : []); offset++; }
         if (isOfficerOrAdmin) {
           setPendingApprovals(Array.isArray(results[offset]) ? results[offset] : []); offset++;
@@ -187,6 +192,65 @@ export default function DashboardPage() {
               )}
             </div>
           </div>
+
+          {/* Clerk — My Upload Status */}
+          {isClerk && (
+            <div className="card">
+              <h2 className="section-title mb-3">My Upload Status</h2>
+              <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(3,1fr)', gap: '8px' }}>
+                <Link href="/archive?tab=pending" style={{ textDecoration: 'none' }}>
+                  <div className="stat-card warning" style={{ cursor: 'pointer', padding: '12px' }}>
+                    <div className="stat-label" style={{ fontSize: '11px' }}>Pending</div>
+                    <div className="stat-value" style={{ fontSize: '22px' }}>
+                      {isLoading ? '…' : myUploads.filter((d) => !d.is_approved && d.status !== 'rejected').length}
+                    </div>
+                  </div>
+                </Link>
+                <Link href="/archive?tab=my_uploads" style={{ textDecoration: 'none' }}>
+                  <div className="stat-card success" style={{ cursor: 'pointer', padding: '12px' }}>
+                    <div className="stat-label" style={{ fontSize: '11px' }}>Approved</div>
+                    <div className="stat-value" style={{ fontSize: '22px' }}>
+                      {isLoading ? '…' : myUploads.filter((d) => d.is_approved).length}
+                    </div>
+                  </div>
+                </Link>
+                <Link href="/archive?tab=rejected" style={{ textDecoration: 'none' }}>
+                  <div className="stat-card danger" style={{ cursor: 'pointer', padding: '12px' }}>
+                    <div className="stat-label" style={{ fontSize: '11px' }}>Rejected</div>
+                    <div className="stat-value" style={{ fontSize: '22px' }}>
+                      {isLoading ? '…' : myUploads.filter((d) => d.status === 'rejected').length}
+                    </div>
+                  </div>
+                </Link>
+              </div>
+              {myUploads.filter((d) => !d.is_approved || d.status === 'rejected').slice(0, 4).map((doc) => (
+                <div
+                  key={doc.id}
+                  className="activity-item"
+                  style={{ cursor: 'pointer', marginTop: '8px' }}
+                  onClick={() => router.push(`/archive/${doc.id}`)}
+                >
+                  <div className="avatar" style={{
+                    background: doc.status === 'rejected' ? 'var(--color-error-container)' : 'var(--color-warning-container, #fff3e0)',
+                    color: doc.status === 'rejected' ? 'var(--color-error)' : 'var(--color-warning)',
+                  }}>
+                    <span className="material-icons">{doc.status === 'rejected' ? 'cancel' : 'hourglass_empty'}</span>
+                  </div>
+                  <div className="activity-text" style={{ flex: 1, minWidth: 0 }}>
+                    <strong style={{ fontSize: '13px', display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {doc.file_name}
+                    </strong>
+                    <div className="text-xs text-muted mt-1">
+                      {doc.status === 'rejected'
+                        ? <>✗ {doc.rejector_name || 'Officer'}{doc.rejection_reason ? ` — ${doc.rejection_reason.slice(0, 50)}` : ''}</>
+                        : 'Awaiting officer approval'}
+                    </div>
+                  </div>
+                  <StatusBadge status={doc.status} isApproved={doc.is_approved} deleteRequested={doc.delete_requested} />
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Storage */}
           <div className="card-sm">

@@ -36,11 +36,17 @@ def check_access(user, document, action: str = "view"):
         return user.role in ["officer", "unit_admin", "hq_admin", "super_admin"]
 
     # =========================
-    # 🔥 APPROVAL BLOCK
-    # =========================
+#  OWNER OVERRIDE (FIRST)
+# =========================
+    if user.id == document.uploaded_by:
+        return True
+
+# =========================
+#  APPROVAL BLOCK
+# =========================
     if not document.is_approved and user.role not in [
         "officer", "unit_admin", "hq_admin", "super_admin"
-    ]:
+]:
         return False
 
     # =========================

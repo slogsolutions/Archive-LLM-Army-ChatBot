@@ -1152,10 +1152,12 @@ input, textarea, select { font-family: var(--font-body); }
 }
 
 .review-btn-reject {
-  background: var(--color-error-container);
-  color: var(--color-error);
-  border-color: var(--color-error-container);
+  background: var(--color-error);
+  color: white;
+  border-color: var(--color-error);
 }
+
+
 .review-btn-reject:hover {
   background: var(--color-error);
   color: white;

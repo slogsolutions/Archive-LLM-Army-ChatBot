@@ -8,12 +8,12 @@ import { api, formatFileSize } from '../../lib/api';
 
 // Stages in display order
 const PIPELINE_STAGES = [
-  { key: 'uploaded',    label: 'Uploaded',        icon: 'upload_file' },
-  { key: 'approved',    label: 'Approved',         icon: 'verified' },
-  { key: 'processing',  label: 'OCR Running',      icon: 'sync' },
-  { key: 'processed',   label: 'OCR Complete',     icon: 'text_snippet' },
-  { key: 'reviewed',    label: 'Text Reviewed',    icon: 'edit_note' },
-  { key: 'indexed',     label: 'Indexed',          icon: 'search' },
+  { key: 'uploaded', label: 'Uploaded', icon: 'upload_file' },
+  { key: 'approved', label: 'Approved', icon: 'verified' },
+  { key: 'processing', label: 'OCR Running', icon: 'sync' },
+  { key: 'processed', label: 'OCR Complete', icon: 'text_snippet' },
+  { key: 'reviewed', label: 'Text Reviewed', icon: 'edit_note' },
+  { key: 'indexed', label: 'Indexed', icon: 'search' },
 ];
 
 const STAGE_ORDER = ['uploaded', 'approved', 'processing', 'processed', 'reviewed', 'indexed'];
@@ -72,14 +72,14 @@ function PipelineTimeline({ doc }) {
         </div>
       )}
       {doc.status === 'rejected' && (
-        <div className="pipeline-error-msg" style={{ color: 'var(--color-danger)' }}>
+        <div className="pipeline-error-msg" style={{ color: 'var(--color-error)' }}>
           <span className="material-icons" style={{ fontSize: '14px' }}>cancel</span>
           Rejected{doc.rejector_name ? ` by ${doc.rejector_name}` : ''}
           {doc.rejection_reason && ` — ${doc.rejection_reason}`}
         </div>
       )}
       {isDeleted && (
-        <div className="pipeline-error-msg" style={{ color: 'var(--color-danger)' }}>
+        <div className="pipeline-error-msg" style={{ color: 'var(--color-error)' }}>
           <span className="material-icons" style={{ fontSize: '14px' }}>delete</span>
           {doc.status === 'delete_requested' ? 'Deletion pending approval' : 'Document deleted'}
         </div>
@@ -304,12 +304,12 @@ export default function PreviewEditPage() {
                     {!doc.is_approved
                       ? 'OCR will begin after an officer approves this document.'
                       : doc.status === 'uploaded'
-                      ? 'Document is queued — waiting for the OCR worker to pick it up.'
-                      : doc.status === 'processing'
-                      ? 'OCR is running, text will appear here shortly…'
-                      : doc.status === 'error'
-                      ? 'OCR failed. Use Re-queue OCR to retry with this document.'
-                      : 'No OCR text extracted.'}
+                        ? 'Document is queued — waiting for the OCR worker to pick it up.'
+                        : doc.status === 'processing'
+                          ? 'OCR is running, text will appear here shortly…'
+                          : doc.status === 'error'
+                            ? 'OCR failed. Use Re-queue OCR to retry with this document.'
+                            : 'No OCR text extracted.'}
                   </p>
                 )}
               </div>
@@ -332,8 +332,8 @@ export default function PreviewEditPage() {
 
               {/* Rejection info */}
               {doc.status === 'rejected' && (
-                <div className="info-card mb-4" style={{ borderLeft: '4px solid var(--color-danger)' }}>
-                  <p className="info-card-text" style={{ margin: 0, color: 'var(--color-danger)' }}>
+                <div className="info-card mb-4" style={{ borderLeft: '4px solid var(--color-error)' }}>
+                  <p className="info-card-text" style={{ margin: 0, color: 'var(--color-error)' }}>
                     <strong>Rejected</strong>{doc.rejector_name ? ` by ${doc.rejector_name}` : ''}
                   </p>
                   {doc.rejection_reason && (
@@ -364,8 +364,8 @@ export default function PreviewEditPage() {
 
               {/* Inline reject reason input */}
               {showRejectInput && (
-                <div className="mb-4" style={{ border: '1px solid var(--color-danger)', borderRadius: '8px', padding: '12px' }}>
-                  <label className="form-label" style={{ color: 'var(--color-danger)' }}>Rejection Reason</label>
+                <div className="mb-4" style={{ border: '1px solid var(--color-error)', borderRadius: '8px', padding: '12px' }}>
+                  <label className="form-label" style={{ color: 'var(--color-error)' }}>Rejection Reason</label>
                   <textarea
                     className="form-textarea"
                     rows={3}
@@ -377,7 +377,7 @@ export default function PreviewEditPage() {
                     <button
                       type="button"
                       className="btn btn-sm"
-                      style={{ background: 'var(--color-danger)', color: '#fff' }}
+                      style={{ background: 'var(--color-error)', color: '#fff' }}
                       onClick={submitReject}
                       disabled={isActing || !rejectReason.trim()}
                     >
@@ -396,7 +396,7 @@ export default function PreviewEditPage() {
 
               {/* Delete request alert */}
               {doc.delete_requested && (
-                <div className="info-card mb-4" style={{ borderLeft: '4px solid var(--color-danger)' }}>
+                <div className="info-card mb-4" style={{ borderLeft: '4px solid var(--color-error)' }}>
                   <p className="info-card-text" style={{ margin: 0 }}>
                     A <strong>delete request</strong> has been submitted for this document.
                   </p>
@@ -410,6 +410,7 @@ export default function PreviewEditPage() {
                   className="review-btn review-btn-reject"
                   onClick={download}
                   disabled={isActing}
+                  style={{ background: 'blue', color: '#fff' , border:'2px solid blue' }}
                 >
                   <span className="material-icons">download</span>
                   Download
@@ -431,7 +432,7 @@ export default function PreviewEditPage() {
                   <button
                     type="button"
                     className="review-btn review-btn-reject"
-                    style={{ background: 'var(--color-danger)', color: '#fff' }}
+                    style={{ background: 'var(--color-error)', color: '#fff' }}
                     onClick={() => setShowRejectInput((v) => !v)}
                     disabled={isActing}
                   >
@@ -456,7 +457,7 @@ export default function PreviewEditPage() {
                   <button
                     type="button"
                     className="review-btn"
-                    style={{ background: 'var(--color-danger)', color: '#fff' }}
+                    style={{ background: 'var(--color-error)', color: '#fff' }}
                     onClick={approveDelete}
                     disabled={isActing}
                   >
@@ -469,7 +470,7 @@ export default function PreviewEditPage() {
                   <button
                     type="button"
                     className="review-btn"
-                    style={{ background: 'var(--color-danger)', color: '#fff' }}
+                    style={{ background: 'var(--color-error)', color: '#fff' }}
                     onClick={directDelete}
                     disabled={isActing}
                   >

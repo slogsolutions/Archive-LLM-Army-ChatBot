@@ -30,7 +30,6 @@ def build_rbac_filter(user):
     # OFFICER / CLERK
     elif role in ["officer", "clerk"]:
         clauses.append({"term": {"unit_id": user.unit_id}})
-        clauses.append({"term": {"branch": user.branch_id}})
 
     # TRAINEE
     elif role == "trainee":
