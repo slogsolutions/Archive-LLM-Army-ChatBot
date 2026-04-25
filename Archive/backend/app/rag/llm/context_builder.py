@@ -5,76 +5,50 @@ if TYPE_CHECKING:
     from app.rag.retriever.retriever import SearchResult
 
 # ---------------------------------------------------------------------------
-# Token / character budget
+# Character budgets
 # ---------------------------------------------------------------------------
-# llama3 8B context window ≈ 8 192 tokens ≈ ~32 000 chars
-# Reserve: system prompt (~1 500) + query (~300) + answer (~2 000) = ~3 800
-# Available for context: ~28 000 chars  →  use 6 000 to be safe with Ollama
-MAX_CONTEXT_CHARS = 6_000
+# llama3 8B context ≈ 8 192 tokens ≈ 32 000 chars.
+# Reserve ~4 000 for system prompt + query + answer headroom.
+MAX_CONTEXT_CHARS = 8_000
 
-# How many chars to show per prose chunk (truncate long ones)
-MAX_PROSE_CHARS = 500
+# With chunk_size=150 words, each prose chunk is ≈ 900–1 100 chars.
+# Show the full chunk — no more silent truncation of the second half.
+MAX_PROSE_CHARS = 1_200
 
-# How many chars to show per command description
-MAX_DESC_CHARS = 300
+# Command description budget (list items are shorter by nature)
+MAX_DESC_CHARS = 500
 
 
-def build_context(results: List["SearchResult"], query: str) -> str:
+def build_context(results: List["SearchResult"], query: str = "") -> str:  # noqa: ARG001
     """
-    Convert top-K SearchResult objects into a single formatted context
-    string that the LLM receives.
+    Convert top-K SearchResult objects into a single formatted context string.
 
-    Two formats are produced depending on result type:
+    Two layouts are produced:
 
-    ListItem (command result)
-    -------------------------
-    [Source 1 | commands.pdf | File Commands | Command #2 | file_commands]
-    Command     : ls -al
-    Description : Formatted listing with hidden files
+    Majority list-item results (> 60 % are ListItems)
+    --------------------------------------------------
+    Shows all items as a numbered list in rank order so the LLM can
+    enumerate them completely.
 
-    Prose chunk
-    -----------
-    [Source 2 | doctrine.pdf | Page 7 | Introduction to Operations]
-    <content text …>
-
-    Sources are included in relevance order (best first) until the
-    character budget is exhausted.
-
-    Args:
-        results : Reranked SearchResult list (already in score order)
-        query   : Original user query (used only for debug logging)
-
-    Returns:
-        Multi-block context string separated by "---" dividers.
+    Prose / mixed results
+    ---------------------
+    Shows each chunk as a labelled block with full content (up to
+    MAX_PROSE_CHARS) in relevance order until the char budget runs out.
     """
     if not results:
         return ""
 
-    blocks: List[str] = []
-    total_chars = 0
+    list_count = sum(1 for r in results if r.is_list_item)
+    if list_count >= max(1, len(results) * 0.6):
+        return _format_list_context(results)
 
-    for i, r in enumerate(results, start=1):
-        if total_chars >= MAX_CONTEXT_CHARS:
-            break
-
-        block = _format_result(i, r)
-        blocks.append(block)
-        total_chars += len(block)
-
-    context = "\n---\n".join(blocks)
-    print(f"[CONTEXT] Built context: {len(blocks)} sources, {total_chars} chars")
-    return context
+    return _format_prose_context(results)
 
 
 def get_source_summary(results: List["SearchResult"]) -> List[dict]:
     """
     Return a deduplicated list of source metadata dicts for the API response.
-
-    Each dict is suitable for rendering a citation in the frontend:
-      { file_name, page_number, section, branch, doc_type, score, title }
-
-    Sources are deduplicated by (file_name, page_number) — prose chunks
-    from the same page are collapsed into one citation entry.
+    Sources are deduplicated by (file_name, page_number, section).
     """
     seen: set[tuple] = set()
     sources: List[dict] = []
@@ -94,7 +68,6 @@ def get_source_summary(results: List["SearchResult"]) -> List[dict]:
             "year":        r.year,
             "score":       round(r.score, 3),
             "title":       r.get_display_title(),
-            # Command-specific extras (None for prose results)
             "command":     r.command if r.is_list_item else None,
             "rank":        r.rank_in_section if r.is_list_item else None,
             "category":    r.category if r.is_list_item else None,
@@ -105,11 +78,87 @@ def get_source_summary(results: List["SearchResult"]) -> List[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Internal formatters
 # ---------------------------------------------------------------------------
 
+def _format_list_context(results: List["SearchResult"]) -> str:
+    """
+    Format list items as a clean numbered list for the LLM.
+
+    Items are sorted by (section, rank_in_section) so the LLM receives
+    them in the intended document order — critical for accurate enumeration.
+    """
+    # Sort: group by section, then by rank within each section
+    sorted_results = sorted(
+        results,
+        key=lambda r: (r.section or "", r.rank_in_section or 999, r.chunk_index),
+    )
+
+    # Build one block per section
+    sections: dict[str, List["SearchResult"]] = {}
+    for r in sorted_results:
+        key = r.section or r.file_name or "Document"
+        sections.setdefault(key, []).append(r)
+
+    blocks: List[str] = []
+    total_chars = 0
+
+    for section_name, items in sections.items():
+        fname = items[0].file_name if items else ""
+        header = f"[Section: {section_name} | {fname}]\n"
+        lines  = [header]
+
+        for r in items:
+            if total_chars >= MAX_CONTEXT_CHARS:
+                break
+
+            if r.is_list_item and r.command:
+                desc = (r.description or r.content or "")[:MAX_DESC_CHARS]
+                rank = r.rank_in_section or "•"
+                line = f"{rank}. {r.command} — {desc}"
+            else:
+                line = f"• {r.content[:MAX_PROSE_CHARS]}"
+
+            lines.append(line)
+            total_chars += len(line)
+
+        blocks.append("\n".join(lines))
+
+    context = "\n\n".join(blocks)
+    print(f"[CONTEXT] Built list context: {len(sorted_results)} items, {total_chars} chars")
+    print("─" * 60)
+    print(context[:2000] + ("…" if len(context) > 2000 else ""))
+    print("─" * 60)
+    return context
+
+
+def _format_prose_context(results: List["SearchResult"]) -> str:
+    """
+    Format prose chunks as labelled source blocks in relevance order.
+    Each block includes the FULL chunk content (up to MAX_PROSE_CHARS)
+    so the LLM never misses information buried in the second half of a chunk.
+    """
+    blocks: List[str] = []
+    total_chars = 0
+
+    for i, r in enumerate(results, start=1):
+        if total_chars >= MAX_CONTEXT_CHARS:
+            break
+
+        block = _format_result(i, r)
+        blocks.append(block)
+        total_chars += len(block)
+
+    context = "\n---\n".join(blocks)
+    print(f"[CONTEXT] Built prose context: {len(blocks)} sources, {total_chars} chars")
+    print("─" * 60)
+    for j, b in enumerate(blocks, 1):
+        print(f"[CONTEXT chunk {j}]\n{b}\n")
+    print("─" * 60)
+    return context
+
+
 def _format_result(index: int, r: "SearchResult") -> str:
-    """Format a single SearchResult as a labelled context block."""
     if r.is_list_item and r.command:
         return _format_list_item(index, r)
     return _format_prose(index, r)
@@ -128,8 +177,8 @@ def _format_list_item(index: int, r: "SearchResult") -> str:
 
 
 def _format_prose(index: int, r: "SearchResult") -> str:
-    heading   = f" | {r.heading}" if r.heading else ""
-    content   = r.content[:MAX_PROSE_CHARS]
+    heading = f" | {r.heading}" if r.heading else ""
+    content = r.content[:MAX_PROSE_CHARS]
     if len(r.content) > MAX_PROSE_CHARS:
         content += "…"
 

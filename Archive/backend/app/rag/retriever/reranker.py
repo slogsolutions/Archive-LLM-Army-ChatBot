@@ -14,6 +14,7 @@ def rerank(
     query_embedding: list,
     results: List["SearchResult"],
     intent: str = "mixed",
+    use_cross_encoder: bool = True,
 ) -> List["SearchResult"]:
     """
     Intent-aware reranker: boosts results matching query intent.
@@ -47,7 +48,14 @@ def rerank(
     if not results:
         return results
 
-    # ── Step 1: Normalize ES scores to [0, 1] ──────────────────────────────
+    # ── Step 1: Cross-encoder rescoring (if model available) ──────────────
+    # Cross-encoder reads (query, doc) together — much more accurate than
+    # bi-encoder cosine similarity.  Falls back silently if not downloaded.
+    if use_cross_encoder:
+        from app.rag.retriever.cross_encoder import rerank as ce_rerank
+        results = ce_rerank(query, results)
+
+    # ── Step 2: Normalize scores to [0, 1] ────────────────────────────────
     scores = [r.score for r in results]
     min_s = min(scores) if scores else 0
     max_s = max(scores) if scores else 0
@@ -73,11 +81,11 @@ def rerank(
                 boost_factor = 0.8  # Slight penalty for prose in command intent
         
         elif intent == "prose":
-            # Boost prose results (Chunk, not ListItem)
-            if not r.is_list_item and r.category == "prose":
+            # Boost prose results (any non-list chunk)
+            if not r.is_list_item:
                 boost_factor = 1.5
             else:
-                boost_factor = 0.8
+                boost_factor = 0.7
         
         elif intent == "list":
             # Boost ListItem results and sort by rank

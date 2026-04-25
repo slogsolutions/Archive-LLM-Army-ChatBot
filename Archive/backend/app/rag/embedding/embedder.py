@@ -20,8 +20,11 @@ def get_model():
 
         print("🚀 Loading embedding model…")
 
+        BASE_DIR = Path(__file__).resolve().parents[2]   # app/
+        model_path = BASE_DIR / "ml_models" / "embedding"
+
         # Always resolve from the project root (where you run `python`)
-        model_path = Path.cwd() / "app" / "ml_models" / "embedding"
+        # model_path = Path.cwd() / "app" / "ml_models" / "embedding"
 
         print(f"📂 Model path : {model_path}")
         print(f"📂 Exists     : {model_path.exists()}")
@@ -70,6 +73,9 @@ def get_embeddings(texts: List[str] | str) -> List[List[float]]:
         normalize_embeddings=True,
         show_progress_bar=len(texts) > 10,   # only show bar for large batches
     )
+
+    if len(embeddings[0]) != 768:
+        raise ValueError("❌ Embedding dimension mismatch")
 
     print("🧠 Encoding done")
 

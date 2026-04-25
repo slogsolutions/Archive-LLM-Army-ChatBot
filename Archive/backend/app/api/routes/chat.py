@@ -7,9 +7,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.rag.llm.qa_pipeline import ask, retrieve_only, QAResponse
-from app.core.auth import get_current_user   # your existing auth dependency
-
-router = APIRouter(prefix="/api/chat", tags=["chat"])
+from app.core.deps import get_current_user   # your existing auth dependency
+router = APIRouter() 
+# router = APIRouter(prefix="/api/chat", tags=["chat"])
 
 
 # ---------------------------------------------------------------------------
@@ -30,11 +30,13 @@ class Filters(BaseModel):
 
 
 class ChatRequest(BaseModel):
-    query:   str          = Field(..., min_length=1, max_length=1000)
-    filters: Filters      = Field(default_factory=Filters)
-    top_k:   int          = Field(default=5, ge=1, le=20)
-    model:   str          = Field(default="llama3:latest")
-    stream:  bool         = Field(default=False)
+    query:      str     = Field(..., min_length=1, max_length=1000)
+    filters:    Filters = Field(default_factory=Filters)
+    top_k:      int     = Field(default=5, ge=1, le=20)
+    model:      str     = Field(default="llama3:latest")
+    stream:     bool    = Field(default=False)
+    session_id: Optional[str] = Field(default=None, max_length=128)
+    enable_agent: bool  = Field(default=True)
 
 
 class SourceCitation(BaseModel):
@@ -60,6 +62,8 @@ class ChatResponse(BaseModel):
     retrieval_scores: list[float]
     model:            str
     intent:           str
+    hops:             int           = 0
+    session_id:       Optional[str] = None
     error:            Optional[str] = None
 
 
@@ -95,6 +99,8 @@ async def chat_endpoint(
         user=user,
         model=req.model,
         stream=False,
+        session_id=req.session_id,
+        enable_agent=req.enable_agent,
     )
 
     if response.error and "not running" in response.error:
@@ -111,6 +117,8 @@ async def chat_endpoint(
         retrieval_scores=response.retrieval_scores,
         model=response.model,
         intent=response.intent,
+        hops=getattr(response, "hops", 0),
+        session_id=req.session_id,
         error=response.error,
     )
 
@@ -181,6 +189,20 @@ async def chat_stream_endpoint(
         yield f"data: {json.dumps({'type': 'done'})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.delete("/session/{session_id}", summary="Clear conversation history")
+async def clear_session(
+    session_id: str,
+    user: dict = Depends(get_current_user),  # noqa: ARG001 — auth guard only
+):
+    """
+    Delete all conversation history for a session_id.
+    Call this when the user clicks 'New Chat'.
+    """
+    from app.rag.llm.conversation_memory import memory as conv_memory
+    conv_memory.clear(session_id)
+    return {"cleared": True, "session_id": session_id}
 
 
 @router.get("/health", summary="Check Ollama status")

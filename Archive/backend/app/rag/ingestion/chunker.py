@@ -12,7 +12,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 _SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
-LIST_SPLIT  = re.compile(r"\n?(\d+)[\.\)]\s+")   # captures the number
+# Allow zero or more spaces after dot — handles "6.Mesh Topology" (no space)
+LIST_SPLIT  = re.compile(r"\n?(\d+)[\.\)]\s*")
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +99,7 @@ def _extract_list_items(text: str, section: str = "") -> List[ListItem]:
 
     Returns [] if the text does not look like a numbered list.
     """
-    if not re.search(r"^\d+[\.\)]\s+", text, re.MULTILINE):
+    if not re.search(r"^\d+[\.\)]\s*\S", text, re.MULTILINE):
         return []
 
     items: List[ListItem] = []
@@ -119,11 +120,25 @@ def _extract_list_items(text: str, section: str = "") -> List[ListItem]:
             command = lines[0].strip()
             description = "\n".join(lines[1:]).strip() if len(lines) > 1 else ""
 
-            # Inline split: "ls -al  Formatted listing…" → cmd + desc
-            if not description and "  " in command:
-                halves = command.split(None, 1)
-                if len(halves) == 2:
-                    command, description = halves[0], halves[1]
+            if not description:
+                # CLI-style: "ls -al  Formatted listing" — split on 2+ spaces
+                if re.search(r"\s{2,}", command):
+                    col_parts = re.split(r"\s{2,}", command, maxsplit=1)
+                    command = col_parts[0].strip()
+                    description = col_parts[1].strip() if len(col_parts) > 1 else ""
+                elif len(command.split()) > 4:
+                    # Topic-style: "Mesh Topology Each host has its connections..."
+                    # Use first 2-3 words as the topic title, rest as description.
+                    words = command.split()
+                    # Find a natural break: look for the first word after position 2
+                    # that starts a new concept (capital letter after lowercase run)
+                    split_at = 3  # default: first 3 words
+                    for idx in range(2, min(5, len(words))):
+                        if words[idx][0].isupper() and words[idx - 1][-1].islower():
+                            split_at = idx
+                            break
+                    command = " ".join(words[:split_at])
+                    description = " ".join(words[split_at:])
 
             items.append(ListItem(
                 rank=rank,

@@ -8,7 +8,7 @@ from typing import Iterator
 # ---------------------------------------------------------------------------
 OLLAMA_BASE_URL  = "http://localhost:11434"
 DEFAULT_MODEL    = "llama3:latest"
-REQUEST_TIMEOUT  = 120   # seconds — llama3 on CPU can be slow
+REQUEST_TIMEOUT  = 600   # seconds — llama3 8B on CPU needs 3-8 min for large context
 
 
 # ---------------------------------------------------------------------------
@@ -20,8 +20,8 @@ def chat(
     system: str = "",
     model: str = DEFAULT_MODEL,
     stream: bool = False,
-    temperature: float = 0.2,    # Low → factual; army docs need precision
-    max_tokens: int = 1024,
+    temperature: float = 0.2,
+    max_tokens: int = 1024,     # Increased: 512 cut off long list answers mid-way
 ) -> str | Iterator[str]:
     """
     Send a prompt to Ollama and return the response.
@@ -52,6 +52,7 @@ def chat(
         "options": {
             "temperature":  temperature,
             "num_predict":  max_tokens,
+            "num_ctx":      8192,   # full context window — prevents truncation on large prompts
         },
     }
 

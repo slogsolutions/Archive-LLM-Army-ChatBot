@@ -323,6 +323,42 @@ def get_section_commands(
         return []
 
 
+def get_all_list_items_by_category(
+    category: str,
+    rbac_clauses: list | None = None,
+    es: Elasticsearch = None,
+) -> list[dict]:
+    """
+    Fetch ALL indexed list items for a given category, sorted by rank.
+    Used by the retriever for "list all X" queries instead of hybrid search.
+    Returns up to 200 items (enough for any realistic command list).
+    """
+    if es is None:
+        es = get_es()
+
+    filter_clauses: list[dict] = [
+        {"term": {"is_list_item": True}},
+        {"term": {"category": category}},
+    ]
+    if rbac_clauses:
+        filter_clauses.extend(rbac_clauses)
+
+    query = {"bool": {"filter": filter_clauses}}
+
+    try:
+        resp = es.search(
+            index=INDEX_NAME,
+            query=query,
+            size=200,
+            sort=[{"doc_id": "asc"}, {"rank_in_section": "asc"}],
+            _source=True,
+        )
+        return resp["hits"]["hits"]
+    except Exception as e:
+        print(f"[ES] get_all_list_items_by_category error: {e}")
+        return []
+
+
 def delete_doc_chunks(doc_id: int, es: Elasticsearch = None) -> None:
     """Remove all previously indexed chunks for a given doc_id."""
     if es is None:

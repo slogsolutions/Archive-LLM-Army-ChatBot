@@ -92,7 +92,7 @@ def ingest_document(doc, parsed_doc: ParsedDocument | None = None) -> int:
     # 5. CHUNK
     # ─────────────────────────────────────────────────────────────────────
     chunks: list[Union[Chunk, ListItem]] = chunk_document(
-        parsed_doc.pages, chunk_size=350, overlap=80
+        parsed_doc.pages, chunk_size=150, overlap=30
     )
 
     if not chunks:

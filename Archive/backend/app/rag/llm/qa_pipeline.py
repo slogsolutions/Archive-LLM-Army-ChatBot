@@ -7,41 +7,26 @@ from app.rag.retriever.query_parser import detect_query_intent
 from app.rag.llm.llm_client import chat, is_ollama_running
 from app.rag.llm.context_builder import build_context, get_source_summary
 from app.rag.llm.prompt_builder import build_system_prompt, build_user_prompt
+from app.rag.llm.faithfulness_guard import check_faithfulness, safe_answer
+from app.rag.llm.citation_injector import inject_citations
+from app.rag.llm.conversation_memory import memory as conv_memory
+from app.rag.llm import agent_loop
 
-
-# ---------------------------------------------------------------------------
-# Response dataclass
-# ---------------------------------------------------------------------------
 
 @dataclass
 class QAResponse:
-    """
-    Structured response from the full RAG + LLM pipeline.
-
-    Fields
-    ------
-    answer          : LLM-generated answer text
-    query           : Original user query
-    sources         : Deduplicated source citations (file, page, section, score)
-    results_count   : Number of chunks retrieved and sent to LLM
-    retrieval_scores: Per-chunk relevance scores (for debugging / UI confidence)
-    model           : Ollama model name used
-    intent          : Detected query intent (command / list / prose / mixed)
-    error           : Set when the pipeline could not complete normally
-    """
     answer:            str
     query:             str
-    sources:           List[dict]        = field(default_factory=list)
-    results_count:     int               = 0
-    retrieval_scores:  List[float]       = field(default_factory=list)
-    model:             str               = "llama3:latest"
-    intent:            str               = "mixed"
-    error:             Optional[str]     = None
+    sources:           List[dict]    = field(default_factory=list)
+    results_count:     int           = 0
+    retrieval_scores:  List[float]   = field(default_factory=list)
+    model:             str           = "llama3:latest"
+    intent:            str           = "mixed"
+    faithfulness:      float         = 1.0
+    is_faithful:       bool          = True
+    hops:              int           = 0
+    error:             Optional[str] = None
 
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
 
 def ask(
     query: str,
@@ -50,112 +35,143 @@ def ask(
     user=None,
     model: str = "llama3:latest",
     stream: bool = False,
-) -> QAResponse | Iterator[str]:
+    run_faithfulness_check: bool = True,
+    session_id: str | None = None,
+    enable_agent: bool = True,
+) -> "QAResponse | Iterator[str]":
     """
-    Full RAG → LLM pipeline for a single user query.
+    Full production RAG + LLM pipeline.
 
-    Pipeline
-    --------
-    1.  Guard   — check Ollama is running
-    2.  Detect  — query intent (command / list / prose / mixed)
-    3.  Retrieve — hybrid ES search + reranking (your existing retriever)
-    4.  Build context — format results into a context string
-    5.  Build prompts — system (army rules + branch + intent) + user (context + query)
-    6.  LLM call — llama3 via Ollama
-    7.  Return  — QAResponse with answer + sources + scores
-
-    Args:
-        query   : Natural language question from the user
-        filters : Explicit ES filters {branch, doc_type, year, section,
-                  rank_in_section, category, command}
-        top_k   : Number of chunks to retrieve (5 is safe for llama3 8B)
-        user    : Authenticated user object (for RBAC filtering)
-        model   : Ollama model name
-        stream  : If True, returns a token Iterator instead of QAResponse
-
-    Returns:
-        QAResponse  — when stream=False (default)
-        Iterator[str] — token stream when stream=True
-                        Note: sources/metadata are NOT available in stream mode;
-                        fetch them separately via retrieve_only() if needed.
+    Stages
+    ------
+    1  Ollama guard
+    2  Intent detection
+    3  Conversation memory — inject prior Q&A turns into the prompt
+    4  Retrieval (parse → HyDE → embed → hybrid BM25+KNN → cross-encoder rerank)
+    5  Agentic multi-hop — re-search if first answer is insufficient
+    6  Context building (list formatter or prose formatter)
+    7  Prompt construction (intent-aware system + user prompts)
+    8  LLM generation
+    9a Faithfulness guard (skipped for list intent)
+    9b Citation injection
+    10 Conversation memory — record this turn
+    11 Return QAResponse
     """
-
-    # ── 1. Guard ─────────────────────────────────────────────────────────
+    # ── Stage 1 ────────────────────────────────────────────────────────────
     if not is_ollama_running():
         return QAResponse(
-            answer="",
-            query=query,
-            model=model,
-            error=(
-                "Ollama is not running. "
-                "Start it with:  ollama serve\n"
-                "Then pull the model:  ollama pull llama3"
-            ),
+            answer="", query=query, model=model,
+            error="Ollama is not running. Run: ollama serve && ollama pull llama3",
         )
 
-    # ── 2. Intent detection ───────────────────────────────────────────────
+    # ── Stage 2 ────────────────────────────────────────────────────────────
     intent = detect_query_intent(query)
-    print(f"[QA] Query: {query!r}  |  Intent: {intent}")
+    print(f"[QA] Query={query!r}  Intent={intent}")
 
-    # ── 3. Retrieve ───────────────────────────────────────────────────────
+    # ── Stage 3: Conversation context ─────────────────────────────────────
+    history_block = ""
+    if session_id:
+        history_block = conv_memory.get_context_block(session_id)
+        if history_block:
+            print(f"[QA] Injecting conversation history for session={session_id!r}")
+
+    # ── Stage 4: Retrieval ─────────────────────────────────────────────────
+    effective_top_k = top_k * 4 if intent == "list" else top_k
     results: List[SearchResult] = search(
-        query=query,
-        filters=filters,
-        top_k=top_k,
-        user=user,
+        query=query, filters=filters, top_k=effective_top_k, user=user,
     )
 
     if not results:
         return QAResponse(
             answer=(
-                "No relevant documents were found for your query. "
-                "Please try rephrasing or check that the relevant documents "
-                "have been uploaded and indexed."
+                "No relevant documents found. "
+                "Try rephrasing or ensure documents are indexed."
             ),
-            query=query,
-            model=model,
-            intent=intent,
+            query=query, model=model, intent=intent,
         )
 
-    print(f"[QA] Retrieved {len(results)} chunks")
+    print(f"[QA] {len(results)} chunks retrieved")
 
-    # ── 4. Build context ──────────────────────────────────────────────────
-    context = build_context(results, query)
+    # ── Stage 5: Context + first-pass LLM call ────────────────────────────
+    context        = build_context(results, query)
+    system_prompt  = build_system_prompt(results=results, intent=intent)
+    user_prompt    = _build_prompt_with_history(query, context, history_block)
 
-    # ── 5. Build prompts ──────────────────────────────────────────────────
-    system_prompt = build_system_prompt(results=results, intent=intent)
-    user_prompt   = build_user_prompt(query=query, context=context)
-
-    # ── 6. LLM call ───────────────────────────────────────────────────────
-    print(f"[QA] Calling {model} (stream={stream})…")
+    print("─" * 60)
+    print(f"[PROMPT system]\n{system_prompt}\n")
+    print(f"[PROMPT user]\n{user_prompt}\n")
+    print("─" * 60)
 
     if stream:
-        # Return raw token iterator — caller handles SSE/WebSocket framing
-        return chat(
-            prompt=user_prompt,
-            system=system_prompt,
-            model=model,
-            stream=True,
+        return chat(prompt=user_prompt, system=system_prompt, model=model, stream=True)
+
+    print(f"[QA] Calling {model}  stream=False")
+    raw_answer = chat(prompt=user_prompt, system=system_prompt, model=model)
+    print(f"[QA] Raw answer: {len(raw_answer)} chars")
+    print(f"[RAW ANSWER]\n{raw_answer}\n")
+    print("─" * 60)
+
+    # ── Stage 5b: Agentic multi-hop ───────────────────────────────────────
+    hops = 0
+    if enable_agent:
+        results, hops = agent_loop.run(
+            original_query  = query,
+            initial_results = results,
+            initial_answer  = raw_answer,
+            filters         = filters,
+            user            = user,
+            model           = model,
+            intent          = intent,
         )
+        if hops > 0:
+            # Rebuild context and regenerate answer with expanded results
+            context     = build_context(results, query)
+            user_prompt = _build_prompt_with_history(query, context, history_block)
+            print(f"[QA] Re-answering after {hops} hop(s)…")
+            raw_answer  = chat(prompt=user_prompt, system=system_prompt, model=model)
+            print(f"[QA] Hop answer: {len(raw_answer)} chars")
+            print(f"[RAW ANSWER (hop)]\n{raw_answer}\n")
+            print("─" * 60)
 
-    answer = chat(
-        prompt=user_prompt,
-        system=system_prompt,
-        model=model,
-        stream=False,
-    )
+    # ── Stage 9a: Faithfulness guard ──────────────────────────────────────
+    faith_result   = None
+    guarded_answer = raw_answer
 
-    print(f"[QA] Answer generated ({len(answer)} chars)")
+    if run_faithfulness_check and intent != "list":
+        print("[QA] Running faithfulness check…")
+        faith_result   = check_faithfulness(
+            answer=raw_answer, results=results,
+            run_llm_check=True, model=model,
+        )
+        guarded_answer = safe_answer(raw_answer, faith_result)
+        flag = "✅" if faith_result.is_faithful else "⚠️"
+        print(f"[QA] Faithfulness: {faith_result.confidence:.2f} {flag} ({faith_result.method})")
+        if faith_result.flagged_claims:
+            print(f"[QA] Flagged: {faith_result.flagged_claims[:2]}")
 
-    # ── 7. Return structured response ─────────────────────────────────────
+    # ── Stage 9b: Citation injection ──────────────────────────────────────
+    sources      = get_source_summary(results)
+    final_answer = inject_citations(guarded_answer, sources)
+
+    print(f"[FINAL ANSWER]\n{final_answer}\n")
+    print("─" * 60)
+
+    # ── Stage 10: Store conversation turn ────────────────────────────────
+    if session_id:
+        conv_memory.add_turn(session_id, query, final_answer)
+
+    # ── Stage 11 ──────────────────────────────────────────────────────────
     return QAResponse(
-        answer=answer,
-        query=query,
-        sources=get_source_summary(results),
-        results_count=len(results),
-        retrieval_scores=[round(r.score, 3) for r in results],
-        model=model,
-        intent=intent,
+        answer           = final_answer,
+        query            = query,
+        sources          = sources,
+        results_count    = len(results),
+        retrieval_scores = [round(r.score, 3) for r in results],
+        model            = model,
+        intent           = intent,
+        faithfulness     = faith_result.confidence if faith_result else 1.0,
+        is_faithful      = faith_result.is_faithful if faith_result else True,
+        hops             = hops,
     )
 
 
@@ -165,16 +181,26 @@ def retrieve_only(
     top_k: int = 5,
     user=None,
 ) -> List[SearchResult]:
-    """
-    Run retrieval only — no LLM call.
-
-    Useful for:
-    - Streaming endpoints that need source metadata alongside token stream
-    - Debugging retrieval quality
-    - Building a "preview sources" feature before the full answer loads
-
-    Returns
-    -------
-    List[SearchResult] in reranked order.
-    """
+    """Retrieval only — no LLM. Used for streaming source preview."""
     return search(query=query, filters=filters, top_k=top_k, user=user)
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _build_prompt_with_history(
+    query: str,
+    context: str,
+    history_block: str,
+) -> str:
+    """
+    Prepend conversation history to the standard user prompt so the LLM
+    can resolve references like "elaborate on point 2" or "what about its
+    advantages?".  History is clearly labelled and comes BEFORE the context
+    so the LLM treats context documents as the authoritative source.
+    """
+    base = build_user_prompt(query=query, context=context)
+    if not history_block:
+        return base
+    return f"{history_block}\n{base}"
