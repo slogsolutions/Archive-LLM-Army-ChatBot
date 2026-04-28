@@ -12,6 +12,8 @@ from app.models.unit import Unit
 from app.models.branch import Branch
 from app.models.document import Document
 from app.models.document_chunks import DocumentChunk
+# from Archive.backend.app.api.routes import chat
+from app.api.routes import chat
 
 # ROUTES
 from app.api.routes import auth, users, hq, unit, branch
@@ -19,6 +21,16 @@ from app.api.routes import documents
 
 
 app = FastAPI(title="Army Archive System")
+
+
+@app.on_event("startup")
+async def warm_embedder():
+    import asyncio
+    loop = asyncio.get_event_loop()
+    from app.rag.embedding.embedder import get_model
+    print("[STARTUP] Pre-loading embedding model…")
+    await loop.run_in_executor(None, get_model)
+    print("[STARTUP] Embedding model ready ✅")
 
 # =========================
 # CORS (for React later)
@@ -40,6 +52,8 @@ app.include_router(hq.router, prefix="/hq", tags=["hq"])
 app.include_router(unit.router, prefix="/unit", tags=["unit"])
 app.include_router(branch.router, prefix="/branch", tags=["branch"])
 app.include_router(documents.router, prefix="/documents", tags=["documents"])
+app.include_router(chat.router, prefix="/chat", tags=["chat"])
+
 
 # =========================
 # HEALTH CHECKS

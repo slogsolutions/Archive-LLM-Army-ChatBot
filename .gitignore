@@ -45,3 +45,8 @@ htmlcov/
 Archive/backend/ml_models
 
 Archive/backend/app/ml_models
+
+
+Archive/chat-frontend/.next/
+Archive/chat-frontend/node_modules/
+Archive/chat-frontend/.env

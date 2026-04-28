@@ -21,6 +21,9 @@ class DocumentChunk(Base):
     heading = Column(String, nullable=True)
     char_offset = Column(Integer, nullable=True)
 
+    # auto-extracted chunk keywords (top terms for this chunk)
+    keywords = Column(Text, nullable=True)  # comma-separated
+
     # optional future (pgvector)
     embedding = Column(Text, nullable=True)
 
