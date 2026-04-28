@@ -112,6 +112,10 @@ def ask(
     print("─" * 60)
 
     # ── Stage 5b: Agentic multi-hop ───────────────────────────────────────
+    # NOTE: retry-on-not-available removed — it triggered an extra Ollama
+    # call (~100-200s on CPU) even when retrieval was the root cause.
+    # Better retrieval (dedup fix + no HyDE) makes the LLM answer correctly
+    # in the first pass, so the retry was masking rather than fixing issues.
     hops = 0
     if enable_agent:
         results, hops = agent_loop.run(
@@ -139,9 +143,12 @@ def ask(
 
     if run_faithfulness_check and intent != "list":
         print("[QA] Running faithfulness check…")
+        # run_llm_check=False: the LLM faithfulness call adds ~100s on CPU.
+        # Lexical check (~0ms) is sufficient — it catches the most common
+        # hallucinations (answer words not in context).
         faith_result   = check_faithfulness(
             answer=raw_answer, results=results,
-            run_llm_check=True, model=model,
+            run_llm_check=False, model=model,
         )
         guarded_answer = safe_answer(raw_answer, faith_result)
         flag = "✅" if faith_result.is_faithful else "⚠️"

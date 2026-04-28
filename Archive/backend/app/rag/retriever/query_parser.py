@@ -145,31 +145,49 @@ def parse_query(raw: str) -> dict:
 # Intent detection
 # ---------------------------------------------------------------------------
 
+# Actual CLI command tokens — matched with word boundaries to avoid
+# false positives like "topology" triggering "top".
+_CMD_TOKEN_RE = re.compile(
+    r"\b(ls|cd|pwd|mkdir|cat|cp|mv|rm|touch|grep|chmod|chown|"
+    r"ping|ssh|wget|curl|netstat|ifconfig|nmap|"
+    r"ps|kill|top|bg|fg|jobs|"
+    r"tar|gzip|gunzip|zip|unzip|bzip2|"
+    r"apt|yum|dnf|pip|npm)\b",
+    re.IGNORECASE,
+)
+
+# Prose intent patterns — checked with word boundaries
+_PROSE_RE = re.compile(
+    r"\b(explain|describe|background|overview|detail|procedure|"
+    r"definition|define|meaning\s+of|information\s+about|"
+    r"tell\s+me\s+about|how\s+does|how\s+do|how\s+to|"
+    r"what\s+is|what\s+are|what\s+was|what\s+were|what\s+would|"
+    r"why\s+is|why\s+are|when\s+is|when\s+are)\b",
+    re.IGNORECASE,
+)
+
+# List intent patterns
+_LIST_RE = re.compile(r"\b(list|all|every|each|show\s+all|enumerate)\b", re.IGNORECASE)
+
+
 def detect_query_intent(query: str) -> str:
     """
     Classify query intent for reranker boosting.
 
+    Priority order: prose > list > command > mixed.
+
+    Uses word-boundary regex so "topology" does NOT trigger "top",
+    "psych" does NOT trigger "ps", etc.
+
     Returns: "command" | "list" | "prose" | "mixed"
     """
-    q = query.lower()
+    has_prose   = bool(_PROSE_RE.search(query))
+    has_list    = bool(_LIST_RE.search(query))
+    has_command = bool(re.search(r"\bcommand\b", query, re.IGNORECASE)) or \
+                  bool(_CMD_TOKEN_RE.search(query))
 
-    has_command = any(x in q for x in [
-        "command", "show me", "find", "get",
-        "rank", "position", "which is", "#",
-        "ls", "cd", "pwd", "mkdir", "grep", "chmod",
-        "ping", "ssh", "ps", "kill", "top",
-    ])
-    has_list = any(x in q for x in [
-        "all", "list", "show all", "every", "each", "all the",
-    ])
-    has_prose = any(x in q for x in [
-        "explain", "describe", "tell me about", "background",
-        "overview", "detail", "information about", "procedure",
-        "what is the", "how does", "what is", "what are",
-        "how to", "define", "definition", "meaning of",
-    ])
-
-    if has_prose and not has_command:
+    # Prose always wins — "what is ls" is still a prose question about the command
+    if has_prose:
         return "prose"
     if has_list:
         return "list"

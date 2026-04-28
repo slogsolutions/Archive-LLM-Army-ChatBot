@@ -8,15 +8,15 @@ if TYPE_CHECKING:
 # Character budgets
 # ---------------------------------------------------------------------------
 # llama3 8B context ≈ 8 192 tokens ≈ 32 000 chars.
-# Reserve ~4 000 for system prompt + query + answer headroom.
-MAX_CONTEXT_CHARS = 8_000
+# Keep context tight on CPU — larger context = much slower first token.
+# 3 500 chars ≈ ~875 tokens, leaves plenty of headroom for prompt + answer.
+MAX_CONTEXT_CHARS = 3_500
 
-# With chunk_size=150 words, each prose chunk is ≈ 900–1 100 chars.
-# Show the full chunk — no more silent truncation of the second half.
-MAX_PROSE_CHARS = 1_200
+# Truncate each prose chunk to keep diversity across sources.
+MAX_PROSE_CHARS = 800
 
 # Command description budget (list items are shorter by nature)
-MAX_DESC_CHARS = 500
+MAX_DESC_CHARS = 400
 
 
 def build_context(results: List["SearchResult"], query: str = "") -> str:  # noqa: ARG001
@@ -60,6 +60,7 @@ def get_source_summary(results: List["SearchResult"]) -> List[dict]:
         seen.add(key)
 
         sources.append({
+            "doc_id":      r.doc_id,
             "file_name":   r.file_name,
             "page_number": r.page_number,
             "section":     r.section,

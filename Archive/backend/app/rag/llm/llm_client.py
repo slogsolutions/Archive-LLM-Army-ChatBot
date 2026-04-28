@@ -20,8 +20,8 @@ def chat(
     system: str = "",
     model: str = DEFAULT_MODEL,
     stream: bool = False,
-    temperature: float = 0.2,
-    max_tokens: int = 1024,     # Increased: 512 cut off long list answers mid-way
+    temperature: float = 0.1,   # lower temp = less rambling, more focused
+    max_tokens: int = 400,      # concise answers; list queries will expand naturally
 ) -> str | Iterator[str]:
     """
     Send a prompt to Ollama and return the response.

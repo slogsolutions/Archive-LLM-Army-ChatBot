@@ -1,4 +1,3 @@
-from __future__ import annotations
 """
 Retrieval and answer quality metrics — all offline, no external services.
 

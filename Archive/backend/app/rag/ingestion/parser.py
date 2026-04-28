@@ -26,7 +26,38 @@ class ParsedDocument:
         return len(self.pages)
 
 
+_KW_STOPWORDS = {
+    "the", "and", "for", "with", "this", "that", "from", "have", "been",
+    "will", "are", "was", "were", "has", "had", "its", "not", "but",
+    "also", "can", "may", "each", "than", "then", "into", "more", "some",
+    "used", "use", "using", "which", "when", "where", "their", "they",
+    "them", "there", "these", "those", "such", "only", "other", "about",
+    "after", "before", "between", "both", "does", "data", "type",
+}
+
+
+def auto_extract_keywords(text: str, top_n: int = 25) -> str:
+    """
+    Extract top-N keywords from text using simple term frequency.
+    Returns a comma-separated string of keywords.
+    """
+    from collections import Counter
+    words = re.findall(r"\b[a-zA-Z]{4,}\b", text.lower())
+    words = [w for w in words if w not in _KW_STOPWORDS]
+    if not words:
+        return ""
+    top = [w for w, _ in Counter(words).most_common(top_n)]
+    return ", ".join(top)
+
+
 def extract_metadata(doc) -> dict:
+    # Merge user-supplied keywords with auto-extracted ones
+    user_kw = (doc.keywords or "").strip()
+    text_for_kw = (doc.corrected_text or doc.ocr_text or "").strip()
+    auto_kw = auto_extract_keywords(text_for_kw) if text_for_kw else ""
+
+    combined_kw = ", ".join(filter(None, [user_kw, auto_kw]))
+
     return {
         "branch": doc.branch_name or "",
         "doc_type": doc.document_type_name or "",
@@ -39,6 +70,7 @@ def extract_metadata(doc) -> dict:
         "file_name": doc.file_name,
         "file_type": doc.file_type or "",
         "min_visible_rank": doc.min_visible_rank if doc.min_visible_rank is not None else 6,
+        "keywords": combined_kw,
     }
 
 

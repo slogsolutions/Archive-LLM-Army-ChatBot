@@ -138,27 +138,31 @@ def search(
             return results
         print("🔎 List-all returned 0 — falling back to hybrid search")
 
-    # ── Stage 3: Query rewriting + HyDE ──────────────────────────────────
+    # ── Stage 3: Query expansion only (HyDE disabled) ────────────────────
+    # HyDE (hypothetical document embedding) adds a full Ollama call (~60-120s
+    # on CPU) and generates army-context passages for technical queries (e.g.
+    # "nodes" → terrain description), which HURTS KNN recall for specific
+    # terms. Direct query embedding + BM25 is faster and more accurate here.
     print("🔎 [2] Rewriting query")
-    search_text, hyde_passage = rewrite_query(
+    search_text, _ = rewrite_query(
         query=clean_query,
         intent=intent,
-        use_hyde=True,
+        use_hyde=False,
         use_expansion=True,
     )
     print(f"🔎 Search text : {search_text!r}")
-    print(f"🔎 HyDE        : {'yes' if hyde_passage else 'no'}")
 
     # ── Stage 4: Embed ────────────────────────────────────────────────────
     print("🔎 [3] Embedding")
-    embed_text   = hyde_passage if hyde_passage else search_text
-    embeddings   = get_embeddings([embed_text])
+    embeddings   = get_embeddings([search_text])
     query_vector = embeddings[0]
 
-    # ── Stage 5: Hybrid search ─────────────────────────────────────────────
-    # Retrieve 2× top_k as headroom for the reranker.
-    # For list intent retrieve more candidates so the LLM gets full lists.
-    retrieve_k = top_k * 4 if intent == "list" else top_k * 2
+    # ── Stage 5: Hybrid search ────────────────────────────────────────────
+    # Retrieve a large pool (6× top_k) so that after cross-document dedup
+    # we still have enough UNIQUE chunks to fill the top_k slots.
+    # Previously 2× top_k → after dedup 5 results collapsed to 2 unique,
+    # meaning the "Bluetooth" chunk on p.54 never made it into the window.
+    retrieve_k = top_k * 6 if intent == "list" else top_k * 6
     print("🔎 [4] Hybrid search")
 
     hits = hybrid_search(
@@ -193,7 +197,25 @@ def search(
 
     results = _hits_to_results(hits)
 
-    # ── Stage 6: Rerank ───────────────────────────────────────────────────
+    # ── Stage 6: Cross-document dedup (BEFORE rerank and top_k slice) ────
+    # When the same PDF is uploaded twice, ES returns many identical chunks.
+    # Dedup here on the FULL pool so the reranker sees diverse content and
+    # the final top_k is filled with unique, varied chunks.
+    seen_fp: set[str] = set()
+    unique_results: List[SearchResult] = []
+    for r in results:
+        # Use first 150 chars as fingerprint — long enough to distinguish
+        # chunks that start the same but diverge (e.g. multi-topic pages).
+        fp = r.content[:150].strip().lower()
+        if fp not in seen_fp:
+            seen_fp.add(fp)
+            unique_results.append(r)
+    removed = len(results) - len(unique_results)
+    if removed:
+        print(f"🔎 Dedup: removed {removed} duplicate chunks, {len(unique_results)} unique remain")
+    results = unique_results
+
+    # ── Stage 7: Rerank ───────────────────────────────────────────────────
     print("🔎 [5] Reranking")
     results = rerank(
         query=search_text,

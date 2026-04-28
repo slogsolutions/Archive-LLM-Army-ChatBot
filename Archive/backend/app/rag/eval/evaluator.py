@@ -1,4 +1,3 @@
-from __future__ import annotations
 """
 Offline RAG evaluation harness.
 

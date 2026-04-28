@@ -60,6 +60,7 @@ def _base_dict(doc: Document, db: Session) -> dict:
         "rejection_reason": doc.rejection_reason,
         "status": doc.status,
         "min_visible_rank": doc.min_visible_rank,
+        "keywords": doc.keywords,
         "delete_requested": doc.delete_requested,
         "is_deleted": doc.is_deleted,
         "version": doc.version,
@@ -95,6 +96,7 @@ def upload_document(
     section: str = Form(None),
     year: int = Form(None),
     min_visible_rank: int = Form(6),
+    keywords: str = Form(None),
     user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -170,6 +172,7 @@ def upload_document(
         is_approved=is_approved,
         approved_by=approved_by,
         min_visible_rank=min_visible_rank,
+        keywords=keywords or None,
         status="uploaded",
         version=version,
         parent_id=parent_id,
@@ -504,13 +507,27 @@ def download_document(
     if doc.is_deleted:
         raise HTTPException(404, "Document not found")
 
-    file_stream = get_file_stream(doc.minio_path)
+    try:
+        minio_resp = get_file_stream(doc.minio_path)
+    except Exception as e:
+        raise HTTPException(500, f"File not found in storage: {e}")
 
+    # Stream the MinIO response in 64 KB chunks and close the connection cleanly.
+    def _iter_minio():
+        try:
+            for chunk in minio_resp.stream(amt=65536):
+                yield chunk
+        finally:
+            minio_resp.close()
+            minio_resp.release_conn()
+
+    safe_name = doc.file_name.replace('"', "")
     return StreamingResponse(
-        file_stream,
+        _iter_minio(),
         media_type=doc.file_type or "application/octet-stream",
         headers={
-            "Content-Disposition": f'attachment; filename="{doc.file_name}"'
+            "Content-Disposition": f'attachment; filename="{safe_name}"',
+            "Access-Control-Allow-Origin": "*",   # belt-and-suspenders for CORS on download
         },
     )
 

@@ -61,6 +61,9 @@ class Document(Base):
     ocr_text = Column(Text, nullable=True)
     corrected_text = Column(Text, nullable=True)
 
+    # SEARCH KEYWORDS (optional user-supplied + auto-extracted during OCR)
+    keywords = Column(Text, nullable=True)  # comma-separated keywords
+
     # TIMESTAMPS
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())

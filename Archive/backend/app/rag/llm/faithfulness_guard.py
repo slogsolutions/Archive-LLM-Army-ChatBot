@@ -98,10 +98,20 @@ def check_faithfulness(
             warning="Empty answer or no source documents.",
         )
 
-    # "Not found" answers are trivially faithful — skip all checks.
+    # "Not found" answers: only grant a free pass when context is genuinely
+    # sparse (< 200 chars total). If we retrieved substantial context but the
+    # LLM still said "not available", that is a retrieval-answer mismatch
+    # and must be caught by the normal checks below.
     _lower = answer.lower()
-    if "not available in the provided documents" in _lower or "no relevant documents" in _lower:
-        return FaithfulnessResult(is_faithful=True, confidence=1.0, method="lexical")
+    _is_not_available = (
+        "not available in the provided documents" in _lower
+        or "no relevant documents" in _lower
+        or "information is not available" in _lower
+    )
+    if _is_not_available:
+        total_context_chars = sum(len(r.content) for r in results)
+        if total_context_chars < 200:
+            return FaithfulnessResult(is_faithful=True, confidence=1.0, method="lexical")
 
     # ── Fast lexical check ────────────────────────────────────────────────
     lexical_result = _lexical_check(answer, results)

@@ -78,7 +78,10 @@ def index_chunks(
             "content":          "",  # Will be overwritten per type
             "embedding":        embedding,
             "is_list_item":     isinstance(chunk, ListItem),
-            
+
+            # Keywords: doc-level user-supplied + auto-extracted
+            "keywords":         metadata.get("keywords", ""),
+
             # Access control & metadata
             "branch":           metadata.get("branch", ""),
             "unit_id":          metadata.get("unit_id"),

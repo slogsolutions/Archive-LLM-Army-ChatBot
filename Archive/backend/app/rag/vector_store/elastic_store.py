@@ -92,6 +92,12 @@ _INDEX_MAPPING = {
             "doc_type":        {"type": "keyword"},
             "year":            {"type": "integer"},
 
+            # ========== KEYWORDS (user-supplied + auto-extracted) ==========
+            "keywords": {
+                "type": "text",
+                "analyzer": "doc_analyzer",
+            },
+
             # ========== ACCESS CONTROL ==========
             "uploaded_by":     {"type": "integer"},
             "min_visible_rank":{"type": "integer"},
@@ -187,16 +193,15 @@ def hybrid_search(
     if rbac_clauses:
         filter_clauses.extend(rbac_clauses)
 
-    # BM25 text query
+    # BM25 text query — multi_match across content + keywords (keywords boosted 2×)
     bm25_query: dict = {
         "bool": {
             "must": {
-                "match": {
-                    "content": {
-                        "query": query_text,
-                        "operator": "or",
-                        "fuzziness": "AUTO",
-                    }
+                "multi_match": {
+                    "query":    query_text,
+                    "fields":   ["content", "keywords^2"],
+                    "operator": "or",
+                    "fuzziness": "AUTO",
                 }
             },
         }
