@@ -10,6 +10,7 @@ const NAV_RBAC = {
   '/uploads':   ['super_admin', 'hq_admin', 'unit_admin', 'officer', 'clerk'],
   '/hierarchy': ['super_admin', 'hq_admin', 'unit_admin', 'officer'],
   '/users':     ['super_admin', 'hq_admin', 'unit_admin'],
+  '/access':    ['super_admin', 'hq_admin', 'unit_admin', 'officer'],
 };
 
 const navItems = [
@@ -18,6 +19,7 @@ const navItems = [
   { href: '/uploads',   icon: 'cloud_upload',  label: 'Uploads' },
   { href: '/hierarchy', icon: 'account_tree',  label: 'Hierarchy' },
   { href: '/users',     icon: 'group',         label: 'User Management' },
+  { href: '/access',    icon: 'admin_panel_settings', label: 'Access Control' },
 ];
 
 export default function Sidebar({ user }) {

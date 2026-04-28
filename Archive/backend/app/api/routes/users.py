@@ -208,6 +208,67 @@ def update_user(
 
     return {"message": "User updated"}
 # =========================
+# QUICK ROLE / RANK PATCH
+# =========================
+@router.patch("/access/{user_id}")
+@audit_action("UPDATE_USER_ACCESS")
+def patch_user_access(
+    user_id: int,
+    data: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Quick patch for role and/or rank_level only.
+    Used by the RBAC management UI for inline edits.
+    """
+    if current_user.role not in ["super_admin", "hq_admin", "unit_admin"]:
+        raise HTTPException(403, "Not allowed")
+
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(404, "User not found")
+
+    # Cannot modify a user at same or higher rank
+    if current_user.rank_level >= target.rank_level:
+        raise HTTPException(403, "Cannot modify a user at equal or higher rank")
+
+    # Scope check
+    if current_user.role == "hq_admin" and target.hq_id != current_user.hq_id:
+        raise HTTPException(403, "Out of HQ scope")
+    if current_user.role == "unit_admin" and target.unit_id != current_user.unit_id:
+        raise HTTPException(403, "Out of unit scope")
+
+    ALLOWED_ROLES = {
+        "super_admin": ["super_admin", "hq_admin", "unit_admin", "officer", "clerk", "trainee"],
+        "hq_admin":    ["unit_admin", "officer", "clerk", "trainee"],
+        "unit_admin":  ["officer", "clerk", "trainee"],
+    }
+
+    if "role" in data:
+        new_role = data["role"]
+        if new_role not in ALLOWED_ROLES.get(current_user.role, []):
+            raise HTTPException(403, f"Cannot assign role '{new_role}'")
+        target.role = new_role
+        # Clear clerk-specific fields when switching away from clerk
+        if new_role != "clerk":
+            target.clerk_type = None
+            target.task_category = None
+
+    if "rank_level" in data:
+        new_rank = int(data["rank_level"])
+        if not (1 <= new_rank <= 6):
+            raise HTTPException(400, "rank_level must be 1–6")
+        # Cannot promote target above current user's own rank
+        if new_rank < current_user.rank_level:
+            raise HTTPException(403, "Cannot promote above your own rank level")
+        target.rank_level = new_rank
+
+    db.commit()
+    return {"message": "Access updated", "role": target.role, "rank_level": target.rank_level}
+
+
+# =========================
 # DELETE USER
 # =========================
 

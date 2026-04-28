@@ -1,4 +1,5 @@
 from __future__ import annotations
+import time
 from dataclasses import dataclass, field
 from typing import Iterator, List, Optional
 
@@ -10,6 +11,9 @@ from app.rag.llm.prompt_builder import build_system_prompt, build_user_prompt
 from app.rag.llm.faithfulness_guard import check_faithfulness, safe_answer
 from app.rag.llm.citation_injector import inject_citations
 from app.rag.llm.conversation_memory import memory as conv_memory
+from app.rag.llm.confidence import (
+    compute_confidence, build_rejection_message, build_warning_note, keyword_coverage
+)
 from app.rag.llm import agent_loop
 
 
@@ -24,7 +28,10 @@ class QAResponse:
     intent:            str           = "mixed"
     faithfulness:      float         = 1.0
     is_faithful:       bool          = True
+    confidence:        float         = 1.0   # composite quality score 0-1
+    was_rejected:      bool          = False  # blocked by confidence gate
     hops:              int           = 0
+    latency_s:         float         = 0.0
     error:             Optional[str] = None
 
 
@@ -57,6 +64,8 @@ def ask(
     10 Conversation memory — record this turn
     11 Return QAResponse
     """
+    t_start = time.time()
+
     # ── Stage 1 ────────────────────────────────────────────────────────────
     if not is_ollama_running():
         return QAResponse(
@@ -163,11 +172,44 @@ def ask(
     print(f"[FINAL ANSWER]\n{final_answer}\n")
     print("─" * 60)
 
+    # ── Stage 9c: Confidence scoring + rejection gate ─────────────────────
+    faith_score = faith_result.confidence if faith_result else 1.0
+    cr = compute_confidence(
+        results=results,
+        answer=final_answer,
+        faithfulness=faith_score,
+    )
+    print(f"[QA] Confidence: {cr.score:.2f} ({cr.level}){' ← REJECTED' if cr.rejected else ''}")
+    if cr.reason:
+        print(f"[QA] Confidence reason: {cr.reason}")
+
+    if cr.rejected:
+        final_answer = build_rejection_message(cr, query)
+    elif cr.level == "moderate":
+        final_answer = final_answer + build_warning_note(cr)
+
     # ── Stage 10: Store conversation turn ────────────────────────────────
     if session_id:
         conv_memory.add_turn(session_id, query, final_answer)
 
-    # ── Stage 11 ──────────────────────────────────────────────────────────
+    # ── Stage 11: Persist RAGLog (non-blocking best-effort) ───────────────
+    latency = round(time.time() - t_start, 2)
+    _write_rag_log(
+        query=query,
+        intent=intent,
+        results=results,
+        sources=sources,
+        final_answer=final_answer,
+        faith_score=faith_score,
+        cr=cr,
+        model=model,
+        session_id=session_id,
+        user=user,
+        latency_s=latency,
+        was_rejected=cr.rejected,
+    )
+
+    # ── Stage 12 ──────────────────────────────────────────────────────────
     return QAResponse(
         answer           = final_answer,
         query            = query,
@@ -176,9 +218,12 @@ def ask(
         retrieval_scores = [round(r.score, 3) for r in results],
         model            = model,
         intent           = intent,
-        faithfulness     = faith_result.confidence if faith_result else 1.0,
+        faithfulness     = faith_score,
         is_faithful      = faith_result.is_faithful if faith_result else True,
+        confidence       = cr.score,
+        was_rejected     = cr.rejected,
         hops             = hops,
+        latency_s        = latency,
     )
 
 
@@ -190,6 +235,70 @@ def retrieve_only(
 ) -> List[SearchResult]:
     """Retrieval only — no LLM. Used for streaming source preview."""
     return search(query=query, filters=filters, top_k=top_k, user=user)
+
+
+def _write_rag_log(
+    query: str,
+    intent: str,
+    results: List[SearchResult],
+    sources: List[dict],
+    final_answer: str,
+    faith_score: float,
+    cr,
+    model: str,
+    session_id: str | None,
+    user,
+    latency_s: float,
+    was_rejected: bool,
+) -> None:
+    """
+    Persist a RAGLog row — best-effort, never raises.
+    Called at the end of every ask() regardless of outcome.
+    Provides the audit trail required for military deployments.
+    """
+    import json
+    try:
+        from app.core.database import SessionLocal
+        from app.models.rag_log import RAGLog
+        from app.rag.llm.confidence import keyword_coverage
+
+        ctx_text = " ".join(r.content for r in results)
+        kw_cov   = keyword_coverage(query, ctx_text)
+        scores   = [r.score for r in results]
+
+        status = "rejected" if was_rejected else (
+            "not_found" if not results else "ok"
+        )
+
+        log = RAGLog(
+            query            = query[:1000],
+            intent           = intent,
+            session_id       = session_id,
+            user_id          = user.id if user else None,
+            retrieval_count  = len(results),
+            unique_sources   = len({r.doc_id for r in results}),
+            top_score        = round(scores[0], 3) if scores else None,
+            avg_score        = round(sum(scores) / len(scores), 3) if scores else None,
+            sources_json     = json.dumps([s.get("file_name") for s in sources[:10]]),
+            answer_preview   = final_answer[:500],
+            answer_length    = len(final_answer),
+            confidence       = cr.score,
+            faithfulness     = faith_score,
+            keyword_coverage = kw_cov,
+            was_rejected     = was_rejected,
+            status           = status,
+            latency_s        = latency_s,
+            model            = model,
+            method           = "sync",
+        )
+        db = SessionLocal()
+        try:
+            db.add(log)
+            db.commit()
+        finally:
+            db.close()
+    except Exception as e:
+        print(f"[QA] RAGLog write failed (non-fatal): {e}")
 
 
 # ---------------------------------------------------------------------------

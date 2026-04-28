@@ -16,6 +16,7 @@ class ParsedPage:
 class ParsedDocument:
     pages: List[ParsedPage]
     file_type: str = ""
+    title: str = ""           # document-level title extracted from PDF header
 
     @property
     def full_text(self) -> str:
@@ -50,27 +51,29 @@ def auto_extract_keywords(text: str, top_n: int = 25) -> str:
     return ", ".join(top)
 
 
-def extract_metadata(doc) -> dict:
-    # Merge user-supplied keywords with auto-extracted ones
+def extract_metadata(doc, parsed_doc: "ParsedDocument | None" = None) -> dict:
     user_kw = (doc.keywords or "").strip()
     text_for_kw = (doc.corrected_text or doc.ocr_text or "").strip()
     auto_kw = auto_extract_keywords(text_for_kw) if text_for_kw else ""
-
     combined_kw = ", ".join(filter(None, [user_kw, auto_kw]))
 
+    # Pull title from the parsed document if available
+    doc_title = (parsed_doc.title if parsed_doc and parsed_doc.title else "").strip()
+
     return {
-        "branch": doc.branch_name or "",
-        "doc_type": doc.document_type_name or "",
-        "year": doc.year,
-        "section": doc.section or "",
-        "hq_id": doc.hq_id,
-        "unit_id": doc.unit_id,
-        "branch_id": doc.branch_id,
-        "uploaded_by": doc.uploaded_by,
-        "file_name": doc.file_name,
-        "file_type": doc.file_type or "",
+        "branch":          doc.branch_name or "",
+        "doc_type":        doc.document_type_name or "",
+        "year":            doc.year,
+        "section":         doc.section or "",
+        "hq_id":           doc.hq_id,
+        "unit_id":         doc.unit_id,
+        "branch_id":       doc.branch_id,
+        "uploaded_by":     doc.uploaded_by,
+        "file_name":       doc.file_name,
+        "file_type":       doc.file_type or "",
         "min_visible_rank": doc.min_visible_rank if doc.min_visible_rank is not None else 6,
-        "keywords": combined_kw,
+        "keywords":        combined_kw,
+        "doc_title":       doc_title,
     }
 
 
@@ -101,31 +104,69 @@ def parse_document(file_path: str, ocr_text: str = None) -> ParsedDocument:
         return ParsedDocument(pages=[], file_type=ext.lstrip("."))
 
 
+_NOTE_RE  = re.compile(r"^note\s*[:\-]", re.IGNORECASE)
+_PARA_RE  = re.compile(r"^\d+[\.\)]\s")
+_SUB_RE   = re.compile(r"^\([a-z]\)\s", re.IGNORECASE)
+_WATER_RE = re.compile(r"^(restricted|confidential|secret|top secret|classified)$", re.IGNORECASE)
+
+
+def markdown_to_parsed_doc(md: str, method: str = "unknown") -> "ParsedDocument":
+    """
+    Convert a Markdown string (from Marker/Docling/PyMuPDF) into a
+    ParsedDocument where each `##` section becomes one ParsedPage.
+
+    This is the shared entry-point used by pipeline.py after md_parser
+    produces the Markdown.  The chunker then receives properly-headed
+    pages and can prepend headings to chunk texts without any heuristics.
+    """
+    from app.rag.ingestion.md_parser import markdown_to_sections
+
+    sections = markdown_to_sections(md)
+    if not sections:
+        return ParsedDocument(pages=[], file_type="pdf")
+
+    doc_title = sections[0][0] if sections else ""
+    pages: List[ParsedPage] = []
+
+    for i, (title, heading, body) in enumerate(sections):
+        if not body.strip():
+            continue
+        pages.append(ParsedPage(
+            page_number=i + 1,
+            text=body,
+            heading=heading,
+        ))
+
+    return ParsedDocument(
+        pages=[p for p in pages if p.text.strip()],
+        file_type="pdf",
+        title=doc_title,
+    )
+
+
 def _parse_pdf(file_path: str, ocr_text: str = None) -> ParsedDocument:
     """
-    Extract text from PDF using PyMuPDF direct extraction first.
-    Falls back to provided ocr_text if pages are empty (scanned docs).
+    PDF → ParsedDocument via the md_parser strategy cascade:
+      Marker → Docling → PyMuPDF (font-aware) → PaddleOCR fallback.
+
+    Each successful strategy produces Markdown; the Markdown is then
+    converted into section-per-page ParsedDocument via markdown_to_parsed_doc().
     """
-    import fitz
+    from app.rag.ingestion.md_parser import convert_to_markdown
 
-    pages = []
-    with fitz.open(file_path) as pdf:
-        for i, page in enumerate(pdf):
-            text = page.get_text("text").strip()
-            pages.append(ParsedPage(page_number=i + 1, text=text))
+    result = convert_to_markdown(file_path=file_path, ocr_text=ocr_text)
+    print(
+        f"[PARSER] PDF → MD: method={result.method}  "
+        f"quality={result.quality:.2f}  chars={len(result.markdown)}"
+    )
+    if result.warnings:
+        for w in result.warnings:
+            print(f"[PARSER] Quality warning: {w}")
 
-    total_digital_chars = sum(len(p.text) for p in pages)
+    if not result.markdown.strip():
+        return ParsedDocument(pages=[], file_type="pdf")
 
-    # If digital extraction was sparse, prefer OCR text
-    if total_digital_chars < 50 * len(pages) and ocr_text:
-        # OCR text has pages separated by double-newline
-        ocr_page_texts = [t.strip() for t in ocr_text.split("\n\n") if t.strip()]
-        pages = [
-            ParsedPage(page_number=i + 1, text=t)
-            for i, t in enumerate(ocr_page_texts)
-        ]
-
-    return ParsedDocument(pages=[p for p in pages if p.text.strip()], file_type="pdf")
+    return markdown_to_parsed_doc(result.markdown, method=result.method)
 
 
 def _parse_docx(file_path: str) -> ParsedDocument:

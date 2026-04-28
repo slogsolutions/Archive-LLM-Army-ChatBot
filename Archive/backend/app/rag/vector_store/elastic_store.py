@@ -92,6 +92,12 @@ _INDEX_MAPPING = {
             "doc_type":        {"type": "keyword"},
             "year":            {"type": "integer"},
 
+            # ========== DOCUMENT TITLE (extracted from PDF header) ==========
+            "doc_title": {
+                "type": "text",
+                "analyzer": "doc_analyzer",
+            },
+
             # ========== KEYWORDS (user-supplied + auto-extracted) ==========
             "keywords": {
                 "type": "text",
@@ -193,13 +199,14 @@ def hybrid_search(
     if rbac_clauses:
         filter_clauses.extend(rbac_clauses)
 
-    # BM25 text query — multi_match across content + keywords (keywords boosted 2×)
+    # BM25 text query — multi_match across content + heading + doc_title + keywords
+    # Boost order: keywords (3×) > doc_title (2×) > heading (2×) > content (1×)
     bm25_query: dict = {
         "bool": {
             "must": {
                 "multi_match": {
                     "query":    query_text,
-                    "fields":   ["content", "keywords^2"],
+                    "fields":   ["content", "heading^2", "doc_title^2", "keywords^3"],
                     "operator": "or",
                     "fuzziness": "AUTO",
                 }

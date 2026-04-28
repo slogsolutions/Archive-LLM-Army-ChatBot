@@ -37,24 +37,49 @@ def ingest_document(doc, parsed_doc: ParsedDocument | None = None) -> int:
 
     # ─────────────────────────────────────────────────────────────────────
     # 1. BUILD PARSED DOC
+    # Strategy:
+    #   a) If the original PDF is in MinIO → download to /tmp → run the
+    #      multi-strategy Markdown pipeline (Marker → Docling → PyMuPDF)
+    #   b) Otherwise fall back to the stored ocr_text / corrected_text
     # ─────────────────────────────────────────────────────────────────────
     if parsed_doc is None:
-        raw_text = (doc.corrected_text or doc.ocr_text or "").strip()
+        local_pdf_path: str | None = None
+        ocr_text_fallback = (doc.corrected_text or doc.ocr_text or "").strip()
+        is_pdf = (doc.file_type or "").lower() in (
+            "application/pdf", "pdf"
+        ) or (doc.file_name or "").lower().endswith(".pdf")
 
-        if not raw_text:
-            print(f"[PIPELINE] doc_id={doc.id}: no text available — skipping")
+        if is_pdf and doc.minio_path:
+            try:
+                from app.services.minio_service import download_file
+                import tempfile, os
+                tmp_dir  = tempfile.gettempdir()
+                tmp_path = os.path.join(tmp_dir, f"pipeline_{doc.id}_{doc.file_name}")
+                download_file(doc.minio_path, tmp_path)
+                local_pdf_path = tmp_path
+                print(f"[PIPELINE] Downloaded PDF to {tmp_path}")
+            except Exception as dl_err:
+                print(f"[PIPELINE] MinIO download failed ({dl_err}) — will use stored text")
+
+        if local_pdf_path:
+            from app.rag.ingestion.parser import _parse_pdf
+            parsed_doc = _parse_pdf(local_pdf_path, ocr_text=ocr_text_fallback)
+            # Clean up temp file
+            try:
+                import os
+                os.remove(local_pdf_path)
+            except Exception:
+                pass
+        elif ocr_text_fallback:
+            # Plain-text fallback: split on blank lines → pages
+            page_texts = [t.strip() for t in re.split(r"\n{2,}", ocr_text_fallback) if t.strip()]
+            parsed_doc = ParsedDocument(
+                pages=[ParsedPage(page_number=i + 1, text=t) for i, t in enumerate(page_texts)],
+                file_type=doc.file_type or "",
+            )
+        else:
+            print(f"[PIPELINE] doc_id={doc.id}: no PDF and no stored text — skipping")
             return 0
-
-        # OCR text may come in as one big blob — split on blank lines → pages
-        page_texts = [t.strip() for t in re.split(r"\n{2,}", raw_text) if t.strip()]
-
-        parsed_doc = ParsedDocument(
-            pages=[
-                ParsedPage(page_number=i + 1, text=t)
-                for i, t in enumerate(page_texts)
-            ],
-            file_type=doc.file_type or "",
-        )
 
     # ─────────────────────────────────────────────────────────────────────
     # 2. OCR CLEANING  (recover list structure BEFORE generic cleaning)
@@ -86,7 +111,7 @@ def ingest_document(doc, parsed_doc: ParsedDocument | None = None) -> int:
     # ─────────────────────────────────────────────────────────────────────
     # 4. METADATA
     # ─────────────────────────────────────────────────────────────────────
-    metadata = extract_metadata(doc)
+    metadata = extract_metadata(doc, parsed_doc)
 
     # ─────────────────────────────────────────────────────────────────────
     # 5. CHUNK

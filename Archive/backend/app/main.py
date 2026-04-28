@@ -12,12 +12,14 @@ from app.models.unit import Unit
 from app.models.branch import Branch
 from app.models.document import Document
 from app.models.document_chunks import DocumentChunk
+from app.models.rag_log import RAGLog  # noqa: F401 — registers table with SQLAlchemy
 # from Archive.backend.app.api.routes import chat
 from app.api.routes import chat
 
 # ROUTES
 from app.api.routes import auth, users, hq, unit, branch
 from app.api.routes import documents
+from app.api.routes import logs
 
 
 app = FastAPI(title="Army Archive System")
@@ -53,6 +55,7 @@ app.include_router(unit.router, prefix="/unit", tags=["unit"])
 app.include_router(branch.router, prefix="/branch", tags=["branch"])
 app.include_router(documents.router, prefix="/documents", tags=["documents"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
+app.include_router(logs.router, prefix="/logs", tags=["logs"])
 
 
 # =========================

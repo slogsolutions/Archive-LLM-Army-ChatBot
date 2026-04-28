@@ -158,6 +158,7 @@ export const api = {
   listUsers: () => request('/users/'),
   createUser: (payload) => request('/users/create', { method: 'POST', body: JSON.stringify(normalizeUser(payload)) }),
   updateUser: (id, payload) => request(`/users/update/${id}`, { method: 'PUT', body: JSON.stringify(normalizeUser(payload, { includeBlankPassword: false })) }),
+  patchUserAccess: (id, payload) => request(`/users/access/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }),
   deleteUser: (id) => request(`/users/delete/${id}`, { method: 'DELETE' }),
   listDocuments: (params = {}) => {
     const q = new URLSearchParams();
@@ -170,6 +171,7 @@ export const api = {
   rejectDocument: (id, reason) => request(`/documents/reject/${id}?reason=${encodeURIComponent(reason)}`, { method: 'POST' }),
   approveDelete: (id) => request(`/documents/approve-delete/${id}`, { method: 'POST' }),
   requestDelete: (id) => request(`/documents/delete/${id}`, { method: 'DELETE' }),
+  patchDocumentAccess: (id, minVisibleRank) => request(`/documents/${id}/access`, { method: 'PATCH', body: JSON.stringify({ min_visible_rank: minVisibleRank }) }),
   reindexDocument: (id) => request(`/documents/reindex/${id}`, { method: 'POST' }),
   indexDocumentText: (id) => request(`/documents/index-text/${id}`, { method: 'POST' }),
   updateDocumentText: (id, text) => request(`/documents/update-text/${id}?text=${encodeURIComponent(text)}`, { method: 'PUT' }),

@@ -264,11 +264,40 @@ def chunk_document(
                             sent_meta.append((s.strip(), page.page_number, current_section))
 
     # -----------------------------------------------------------------------
-    # PASS 2 — chunk collected prose sentences
+    # PASS 2 — section-boundary chunking
+    #
+    # Group collected sentences by section BEFORE running the sliding window.
+    # This prevents cross-section contamination (e.g. a chunk that mixes
+    # "General" content with "Allotment of Money" content).
+    #
+    # Each section's sentences are chunked independently.  The section
+    # heading is then PREPENDED to every chunk's text so the embedding
+    # model captures "what section this is from" — critical for retrieval.
+    #
+    # Example output text for a chunk:
+    #   "Allotment of Money: The DCOAS will make allotments from this sum
+    #    to Commands and Commandants of schools..."
     # -----------------------------------------------------------------------
     if sent_meta:
-        prose_chunks = _chunk_sentences(sent_meta, chunk_size=chunk_size, overlap=overlap)
-        results.extend(prose_chunks)
+        # Group sentences by section while preserving order
+        section_groups: list[tuple[str, list[tuple[str, int, str]]]] = []
+        for entry in sent_meta:
+            section = entry[2] or ""
+            if section_groups and section_groups[-1][0] == section:
+                section_groups[-1][1].append(entry)
+            else:
+                section_groups.append((section, [entry]))
+
+        for section_name, section_sents in section_groups:
+            sec_chunks = _chunk_sentences(
+                section_sents, chunk_size=chunk_size, overlap=overlap
+            )
+            # Prepend the section heading so the embedding captures context
+            for c in sec_chunks:
+                if section_name and section_name.lower() not in c.text[:80].lower():
+                    c.text = f"{section_name}: {c.text}"
+                    c.heading = section_name
+            results.extend(sec_chunks)
 
     return results
 

@@ -1,385 +1,235 @@
-# from __future__ import annotations
-# import os
-# import traceback
+"""
+Celery Workers — all heavy processing off the main FastAPI event loop.
 
-# from app.core.queue import celery_app
-# from app.core.database import SessionLocal
-# from app.models.document import Document
-# from app.services.minio_service import download_file
-# from app.rag.pipeline import ingest_document
-# from app.rag.ingestion.parser import ParsedDocument, ParsedPage
+Tasks
+-----
+process_document(doc_id)      Download → parse → RAG ingest.
+index_corrected_text(doc_id)  Re-ingest edited text without OCR.
+run_rag_query(...)            Full RAG pipeline (retrieve → LLM → log).
 
-# # File extensions that require OCR (cannot be parsed as structured text)
-# _OCR_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
-# # File extensions parsed directly without OCR
-# _DIRECT_EXTENSIONS = {".docx", ".doc", ".xlsx", ".xls", ".csv", ".pptx", ".ppt", ".txt", ".text", ".md"}
-
-
-# def _ext(filename: str) -> str:
-#     return os.path.splitext(filename)[1].lower()
-
-
-# @celery_app.task(
-#     bind=True,
-#     autoretry_for=(Exception,),
-#     retry_backoff=True,
-#     retry_kwargs={"max_retries": 3}
-# )
-# def index_corrected_text(self, doc_id: int):
-#     """
-#     Celery task: index corrected_text (or ocr_text fallback) into Elasticsearch
-#     WITHOUT re-running OCR. Used after a user edits OCR output.
-#     """
-#     print(f"[WORKER] index_corrected_text doc_id={doc_id}")
-#     db = SessionLocal()
-
-#     try:
-#         doc = db.get(Document, doc_id)
-#         if not doc:
-#             print(f"[WORKER] doc_id={doc_id} not found")
-#             return
-
-#         raw_text = (doc.corrected_text or doc.ocr_text or "").strip()
-#         if not raw_text:
-#             print(f"[WORKER] doc_id={doc_id}: no text to index")
-#             doc.status = "error"
-#             db.commit()
-#             return
-
-#         count = ingest_document(doc)
-#         doc.status = "indexed" if count > 0 else "reviewed"
-#         db.commit()
-
-#         print(f"[WORKER] index_corrected_text done doc_id={doc_id}, chunks={count}")
-
-#     except Exception as e:
-#         print(f"[WORKER] index_corrected_text error doc_id={doc_id}: {e}")
-#         try:
-#             doc.status = "error"
-#             db.commit()
-#         except Exception:
-#             pass
-#     finally:
-#         db.close()
-
-
-# @celery_app.task(
-#     bind=True,
-#     autoretry_for=(Exception,),
-#     retry_backoff=True,
-#     retry_kwargs={"max_retries": 3}
-# )
-# def process_document(self, doc_id: int):
-#     """
-#     Celery task: download → parse/OCR → save text → RAG ingest.
-
-#     Routing:
-#       - PDF / images  → PaddleOCR → text → pipeline
-#       - DOCX/XLSX/CSV/PPTX/TXT → direct parser → pipeline
-#       - Unknown ext   → attempt direct parse, fall back to pipeline with empty text
-#     """
-#     print(f"[WORKER] Starting doc_id={doc_id}")
-#     db = SessionLocal()
-
-#     try:
-#         doc = db.get(Document, doc_id)
-#         if not doc:
-#             print(f"[WORKER] doc_id={doc_id} not found")
-#             return
-
-#         doc.status = "processing"
-#         db.commit()
-
-#         # ── Download from MinIO ────────────────────────────────────────────
-#         local_path = f"/tmp/{doc.file_name}"
-#         download_file(doc.minio_path, local_path)
-
-#         ext = _ext(doc.file_name)
-#         parsed_doc: ParsedDocument | None = None
-
-#         # ── Route by file type ─────────────────────────────────────────────
-#         if ext in _OCR_EXTENSIONS:
-#             # Scanned PDF or image: run OCR first
-#             if ext == ".pdf":
-#                 from app.services.ocr_service import run_ocr_on_pdf
-#                 ocr_text = run_ocr_on_pdf(local_path)
-#             else:
-#                 from app.services.ocr_service import run_ocr_on_image_file
-#                 ocr_text = run_ocr_on_image_file(local_path)
-
-#             if not ocr_text.strip():
-#                 print(f"[WORKER] OCR returned empty text for doc_id={doc_id}")
-#                 doc.status = "error"
-#                 db.commit()
-#                 return
-
-#             doc.ocr_text = ocr_text
-#             doc.status = "processed"
-#             db.commit()
-
-#             # Build page-aware ParsedDocument from OCR text
-#             page_texts = [t.strip() for t in ocr_text.split("\n\n") if t.strip()]
-#             if not page_texts:
-#                 page_texts = [ocr_text.strip()]
-#             pages = [ParsedPage(page_number=i + 1, text=t) for i, t in enumerate(page_texts)]
-#             parsed_doc = ParsedDocument(pages=pages, file_type=ext.lstrip("."))
-
-#         elif ext in _DIRECT_EXTENSIONS:
-#             # Structured document: parse directly
-#             from app.rag.ingestion.parser import parse_document
-#             parsed_doc = parse_document(local_path)
-
-#             if not parsed_doc.pages:
-#                 print(f"[WORKER] No content extracted from {ext} for doc_id={doc_id}")
-#                 doc.status = "error"
-#                 db.commit()
-#                 return
-
-#             doc.ocr_text = parsed_doc.full_text
-#             doc.status = "processed"
-#             db.commit()
-
-#         else:
-#             # Unknown format: attempt direct parse, log and continue
-#             print(f"[WORKER] Unknown extension '{ext}' for doc_id={doc_id}, attempting direct parse")
-#             from app.rag.ingestion.parser import parse_document
-#             parsed_doc = parse_document(local_path)
-#             doc.ocr_text = parsed_doc.full_text or ""
-#             doc.status = "processed"
-#             db.commit()
-
-#         # ── RAG ingestion ──────────────────────────────────────────────────
-#         count = ingest_document(doc, parsed_doc)
-#         doc.status = "indexed" if count > 0 else "processed"
-#         db.commit()
-
-#         print(f"[WORKER] Done doc_id={doc_id}, chunks={count}")
-
-#     except Exception as e:
-#         print(f"[WORKER] Error processing doc_id={doc_id}: {e}")
-#         traceback.print_exc()
-#         try:
-#             doc.status = "error"
-#             db.commit()
-#         except Exception:
-#             pass
-
-#     finally:
-#         # Clean up temp file
-#         try:
-#             if os.path.exists(local_path):
-#                 os.remove(local_path)
-#         except Exception:
-#             pass
-#         db.close()
-
-
-
-# Improved Version
-
+Start worker:
+  celery -A app.core.queue:celery_app worker --loglevel=info --concurrency=1
+"""
 from __future__ import annotations
-import os
-import traceback
 
-from app.core.queue import celery_app
+import os
+import time
+import traceback
+from typing import Any
+
+from app.core.queue    import celery_app
 from app.core.database import SessionLocal
 from app.models.document import Document
-from app.services.minio_service import download_file
-from app.rag.pipeline import ingest_document
-from app.rag.ingestion.parser import ParsedDocument, ParsedPage
-from app.rag.ingestion.ocr_cleaner import apply_ocr_pipeline, estimate_ocr_quality  # 🔥 NEW
 
-# File extensions that require OCR (cannot be parsed as structured text)
-_OCR_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
-# File extensions parsed directly without OCR
-_DIRECT_EXTENSIONS = {".docx", ".doc", ".xlsx", ".xls", ".csv", ".pptx", ".ppt", ".txt", ".text", ".md"}
+_OCR_EXTS    = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp"}
+_DIRECT_EXTS = {".docx", ".doc", ".xlsx", ".xls", ".csv", ".pptx", ".ppt", ".txt", ".md"}
 
 
-def _ext(filename: str) -> str:
-    return os.path.splitext(filename)[1].lower()
+def _ext(fn: str) -> str:
+    return os.path.splitext(fn)[1].lower()
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 1: Full document ingestion (download → OCR/parse → RAG ingest)
+# ─────────────────────────────────────────────────────────────────────────────
 
 @celery_app.task(
     bind=True,
     autoretry_for=(Exception,),
     retry_backoff=True,
-    retry_kwargs={"max_retries": 3}
+    retry_kwargs={"max_retries": 3},
+    name="workers.process_document",
 )
-def index_corrected_text(self, doc_id: int):
-    """
-    Celery task: index corrected_text (or ocr_text fallback) into Elasticsearch
-    WITHOUT re-running OCR. Used after a user edits OCR output.
-    
-    🔥 NOW: Also cleans corrected text before indexing.
-    """
-    print(f"[WORKER] index_corrected_text doc_id={doc_id}")
+def process_document(self, doc_id: int) -> dict:
+    print(f"[WORKER] process_document doc_id={doc_id}")
     db = SessionLocal()
-
     try:
         doc = db.get(Document, doc_id)
         if not doc:
-            print(f"[WORKER] doc_id={doc_id} not found")
-            return
-
-        raw_text = (doc.corrected_text or doc.ocr_text or "").strip()
-        if not raw_text:
-            print(f"[WORKER] doc_id={doc_id}: no text to index")
-            doc.status = "error"
-            db.commit()
-            return
-
-        # 🔥 CLEAN before indexing
-        cleaned_text = apply_ocr_pipeline(raw_text)
-        quality = estimate_ocr_quality(cleaned_text)
-        
-        print(f"[WORKER] OCR quality score: {quality['quality_score']}")
-        if quality['issues']:
-            print(f"[WORKER] Issues found: {quality['issues']}")
-
-        # Create ParsedDocument from cleaned text
-        page_texts = [t.strip() for t in cleaned_text.split("\n\n") if t.strip()]
-        if not page_texts:
-            page_texts = [cleaned_text.strip()]
-        pages = [ParsedPage(page_number=i + 1, text=t) for i, t in enumerate(page_texts)]
-        parsed_doc = ParsedDocument(pages=pages, file_type="txt")
-
-        count = ingest_document(doc, parsed_doc)
-        doc.status = "indexed" if count > 0 else "reviewed"
-        db.commit()
-
-        print(f"[WORKER] index_corrected_text done doc_id={doc_id}, chunks={count}")
-
-    except Exception as e:
-        print(f"[WORKER] index_corrected_text error doc_id={doc_id}: {e}")
-        try:
-            doc.status = "error"
-            db.commit()
-        except Exception:
-            pass
-    finally:
-        db.close()
-
-
-@celery_app.task(
-    bind=True,
-    autoretry_for=(Exception,),
-    retry_backoff=True,
-    retry_kwargs={"max_retries": 3}
-)
-def process_document(self, doc_id: int):
-    """
-    Celery task: download → parse/OCR → CLEAN → save text → RAG ingest.
-
-    🔥 NEW: Integrates OCR cleaning pipeline
-
-    Routing:
-      - PDF / images  → PaddleOCR → CLEAN → text → pipeline
-      - DOCX/XLSX/CSV/PPTX/TXT → direct parser → pipeline
-      - Unknown ext   → attempt direct parse, fall back to pipeline with empty text
-    """
-    print(f"[WORKER] Starting doc_id={doc_id}")
-    db = SessionLocal()
-
-    try:
-        doc = db.get(Document, doc_id)
-        if not doc:
-            print(f"[WORKER] doc_id={doc_id} not found")
-            return
+            return {"status": "error", "reason": "not_found"}
 
         doc.status = "processing"
         db.commit()
 
-        # ── Download from MinIO ────────────────────────────────────────────
-        local_path = f"/tmp/{doc.file_name}"
-        download_file(doc.minio_path, local_path)
+        # Download from MinIO
+        from app.services.minio_service import download_file
+        import tempfile
+        local = os.path.join(tempfile.gettempdir(), f"w{doc_id}_{doc.file_name}")
+        download_file(doc.minio_path, local)
 
         ext = _ext(doc.file_name)
+        from app.rag.ingestion.parser import ParsedDocument
         parsed_doc: ParsedDocument | None = None
 
-        # ── Route by file type ─────────────────────────────────────────────
-        if ext in _OCR_EXTENSIONS:
-            # Scanned PDF or image: run OCR first
-            if ext == ".pdf":
-                from app.services.ocr_service import run_ocr_on_pdf
-                ocr_text = run_ocr_on_pdf(local_path)
-            else:
-                from app.services.ocr_service import run_ocr_on_image_file
-                ocr_text = run_ocr_on_image_file(local_path)
+        if ext in _OCR_EXTS:
+            # Strategy cascade: Marker → Docling → PyMuPDF → PaddleOCR
+            ocr_text = ""
+            if ext != ".pdf":
+                try:
+                    from paddleocr import PaddleOCR
+                    p = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
+                    r = p.ocr(local, cls=True)
+                    ocr_text = "\n".join(
+                        ln[1][0] for pg in (r or []) for ln in (pg or []) if ln
+                    )
+                except Exception as e:
+                    print(f"[WORKER] PaddleOCR err: {e}")
 
-            if not ocr_text.strip():
-                print(f"[WORKER] OCR returned empty text for doc_id={doc_id}")
-                doc.status = "error"
-                db.commit()
-                return
+            from app.rag.ingestion.md_parser import convert_to_markdown
+            from app.rag.ingestion.parser   import markdown_to_parsed_doc
+            md = convert_to_markdown(file_path=local, ocr_text=ocr_text)
+            print(f"[WORKER] MD: method={md.method} quality={md.quality:.2f} chars={len(md.markdown)}")
 
-            # 🔥 CLEAN OCR text (recover structure, fix artifacts)
-            print(f"[WORKER] Cleaning OCR output for doc_id={doc_id}")
-            ocr_text = apply_ocr_pipeline(ocr_text)
-            
-            # 🔥 CHECK quality
-            quality = estimate_ocr_quality(ocr_text)
-            print(f"[WORKER] OCR quality score: {quality['quality_score']}")
-            if quality['issues']:
-                print(f"[WORKER] ⚠️  OCR issues: {quality['issues']}")
-            
-            # Store cleaned text
-            doc.ocr_text = ocr_text
-            doc.status = "processed"
-            db.commit()
+            if md.markdown.strip():
+                doc.ocr_text      = md.markdown
+                doc.corrected_text = md.markdown
+                parsed_doc        = markdown_to_parsed_doc(md.markdown, md.method)
 
-            # Build page-aware ParsedDocument from cleaned OCR text
-            page_texts = [t.strip() for t in ocr_text.split("\n\n") if t.strip()]
-            if not page_texts:
-                page_texts = [ocr_text.strip()]
-            pages = [ParsedPage(page_number=i + 1, text=t) for i, t in enumerate(page_texts)]
-            parsed_doc = ParsedDocument(pages=pages, file_type=ext.lstrip("."))
-
-        elif ext in _DIRECT_EXTENSIONS:
-            # Structured document: parse directly
+        elif ext in _DIRECT_EXTS:
             from app.rag.ingestion.parser import parse_document
-            parsed_doc = parse_document(local_path)
+            parsed_doc = parse_document(local)
+            if parsed_doc and parsed_doc.full_text:
+                doc.ocr_text = parsed_doc.full_text
 
-            if not parsed_doc.pages:
-                print(f"[WORKER] No content extracted from {ext} for doc_id={doc_id}")
-                doc.status = "error"
-                db.commit()
-                return
+        try:
+            os.remove(local)
+        except Exception:
+            pass
 
-            doc.ocr_text = parsed_doc.full_text
-            doc.status = "processed"
+        if not parsed_doc or not parsed_doc.pages:
+            doc.status = "error"
             db.commit()
+            return {"status": "error", "reason": "no_content"}
 
-        else:
-            # Unknown format: attempt direct parse, log and continue
-            print(f"[WORKER] Unknown extension '{ext}' for doc_id={doc_id}, attempting direct parse")
-            from app.rag.ingestion.parser import parse_document
-            parsed_doc = parse_document(local_path)
-            doc.ocr_text = parsed_doc.full_text or ""
-            doc.status = "processed"
-            db.commit()
+        db.commit()
 
-        # ── RAG ingestion ──────────────────────────────────────────────────
-        print(f"[WORKER] Ingesting {len(parsed_doc.pages)} pages for doc_id={doc_id}")
-        count = ingest_document(doc, parsed_doc)
+        from app.rag.pipeline import ingest_document
+        count = ingest_document(doc, parsed_doc=parsed_doc)
         doc.status = "indexed" if count > 0 else "processed"
         db.commit()
 
-        print(f"[WORKER] ✓ Done doc_id={doc_id}, chunks={count}")
+        print(f"[WORKER] done doc_id={doc_id} chunks={count}")
+        return {"status": "ok", "doc_id": doc_id, "chunks": count}
 
     except Exception as e:
-        print(f"[WORKER] ✗ Error processing doc_id={doc_id}: {e}")
-        traceback.print_exc()
+        print(f"[WORKER] ERROR doc_id={doc_id}: {e}\n{traceback.format_exc()}")
         try:
             doc.status = "error"
             db.commit()
         except Exception:
             pass
-
+        raise
     finally:
-        # Clean up temp file
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 2: Re-index corrected text (no download/OCR)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_backoff=True,
+    retry_kwargs={"max_retries": 2},
+    name="workers.index_corrected_text",
+)
+def index_corrected_text(self, doc_id: int) -> dict:
+    print(f"[WORKER] index_corrected_text doc_id={doc_id}")
+    db = SessionLocal()
+    try:
+        doc = db.get(Document, doc_id)
+        if not doc:
+            return {"status": "error", "reason": "not_found"}
+
+        if not (doc.corrected_text or doc.ocr_text):
+            doc.status = "error"
+            db.commit()
+            return {"status": "error", "reason": "no_text"}
+
+        from app.rag.pipeline import ingest_document
+        count = ingest_document(doc)
+        doc.status = "indexed" if count > 0 else "reviewed"
+        db.commit()
+        return {"status": "ok", "doc_id": doc_id, "chunks": count}
+    except Exception as e:
+        print(f"[WORKER] index_corrected_text ERROR: {e}")
         try:
-            if os.path.exists(local_path):
-                os.remove(local_path)
+            doc.status = "error"
+            db.commit()
         except Exception:
             pass
+        raise
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Task 3: Async RAG query — returns JSON result stored in Redis
+# ─────────────────────────────────────────────────────────────────────────────
+
+@celery_app.task(
+    bind=True,
+    name="workers.run_rag_query",
+    time_limit=900,        # 15 min hard limit
+    soft_time_limit=840,
+)
+def run_rag_query(
+    self,
+    query:      str,
+    filters:    dict | None,
+    user_id:    int | None,
+    session_id: str | None,
+    model:      str = "llama3:latest",
+    top_k:      int = 5,
+) -> dict[str, Any]:
+    """
+    Full RAG pipeline in a worker.  Result stored in Redis/Celery backend.
+    Poll via GET /chat/result/{task_id}.
+
+    WHY: Ollama on CPU = 100–500 s.  Running on the FastAPI event loop
+    blocks all concurrent requests.  Worker isolates this cost.
+    """
+    from app.rag.llm.qa_pipeline import ask, QAResponse
+    from app.models.user import User
+
+    t0 = time.time()
+    db = SessionLocal()
+    try:
+        user = db.get(User, user_id) if user_id else None
+
+        response: QAResponse = ask(
+            query=query,
+            filters=filters,
+            top_k=top_k,
+            user=user,
+            model=model,
+            stream=False,
+            session_id=session_id,
+            run_faithfulness_check=True,
+            enable_agent=False,
+        )
+
+        return {
+            "status":           "ok",
+            "answer":           response.answer,
+            "query":            response.query,
+            "sources":          response.sources,
+            "results_count":    response.results_count,
+            "retrieval_scores": response.retrieval_scores,
+            "model":            response.model,
+            "intent":           response.intent,
+            "faithfulness":     response.faithfulness,
+            "confidence":       getattr(response, "confidence", None),
+            "was_rejected":     getattr(response, "was_rejected", False),
+            "latency_s":        round(time.time() - t0, 2),
+            "error":            response.error,
+        }
+    except Exception as e:
+        return {
+            "status": "error", "answer": "", "query": query,
+            "sources": [], "latency_s": round(time.time() - t0, 2),
+            "error": str(e),
+        }
+    finally:
         db.close()

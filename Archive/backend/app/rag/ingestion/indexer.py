@@ -79,6 +79,9 @@ def index_chunks(
             "embedding":        embedding,
             "is_list_item":     isinstance(chunk, ListItem),
 
+            # Document title (from PDF header font detection)
+            "doc_title":        metadata.get("doc_title", ""),
+
             # Keywords: doc-level user-supplied + auto-extracted
             "keywords":         metadata.get("keywords", ""),
 
