@@ -31,6 +31,40 @@ class Chunk:
     char_offset: int = 0
 
 
+# ---------------------------------------------------------------------------
+# PARENT-CHILD DATACLASSES (new structured RAG)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ParentChunk:
+    """
+    One full document section — maps to a Markdown ## heading.
+    Stored in ES with is_parent=True; no embedding (full_section_text is used
+    for context after children are retrieved and parent_ids are resolved).
+    """
+    parent_id:        str    # "P_{doc_id}_{section_idx}"
+    heading:          str    # H2 section title from ## marker
+    full_text:        str    # complete section body text
+    page_range_start: int    # first page that contains this section
+    page_range_end:   int    # last page (= start if section fits one page)
+    section_order:    int    # 0-based order of this section in the document
+    doc_id:           int
+
+
+@dataclass
+class ChildChunk:
+    """
+    A short sub-chunk (80–150 words) of a parent section.
+    Stored in ES with is_parent=False; has embedding + parent_id FK.
+    """
+    child_id:    str    # "C_{doc_id}_{section_idx}_{child_idx}"
+    parent_id:   str    # foreign key → ParentChunk.parent_id
+    text:        str    # embedded text (heading prepended)
+    page_number: int    # page where this child sub-chunk starts
+    chunk_index: int    # index within the parent section (0, 1, 2 …)
+    heading:     str    # inherited from parent (always populated)
+
+
 @dataclass
 class ListItem:
     """
@@ -264,11 +298,40 @@ def chunk_document(
                             sent_meta.append((s.strip(), page.page_number, current_section))
 
     # -----------------------------------------------------------------------
-    # PASS 2 — chunk collected prose sentences
+    # PASS 2 — section-boundary chunking
+    #
+    # Group collected sentences by section BEFORE running the sliding window.
+    # This prevents cross-section contamination (e.g. a chunk that mixes
+    # "General" content with "Allotment of Money" content).
+    #
+    # Each section's sentences are chunked independently.  The section
+    # heading is then PREPENDED to every chunk's text so the embedding
+    # model captures "what section this is from" — critical for retrieval.
+    #
+    # Example output text for a chunk:
+    #   "Allotment of Money: The DCOAS will make allotments from this sum
+    #    to Commands and Commandants of schools..."
     # -----------------------------------------------------------------------
     if sent_meta:
-        prose_chunks = _chunk_sentences(sent_meta, chunk_size=chunk_size, overlap=overlap)
-        results.extend(prose_chunks)
+        # Group sentences by section while preserving order
+        section_groups: list[tuple[str, list[tuple[str, int, str]]]] = []
+        for entry in sent_meta:
+            section = entry[2] or ""
+            if section_groups and section_groups[-1][0] == section:
+                section_groups[-1][1].append(entry)
+            else:
+                section_groups.append((section, [entry]))
+
+        for section_name, section_sents in section_groups:
+            sec_chunks = _chunk_sentences(
+                section_sents, chunk_size=chunk_size, overlap=overlap
+            )
+            # Prepend the section heading so the embedding captures context
+            for c in sec_chunks:
+                if section_name and section_name.lower() not in c.text[:80].lower():
+                    c.text = f"{section_name}: {c.text}"
+                    c.heading = section_name
+            results.extend(sec_chunks)
 
     return results
 
@@ -322,3 +385,107 @@ def _chunk_sentences(
         c.total_chunks = total
 
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# PARENT-CHILD CHUNKER
+# ---------------------------------------------------------------------------
+
+def chunk_into_parent_child(
+    sections: "list[tuple[str, str, str]]",  # (doc_title, heading, body)
+    doc_id: int,
+    child_size: int = 120,    # target words per child chunk
+    child_overlap: int = 20,  # overlap between adjacent children
+) -> "tuple[list[ParentChunk], list[ChildChunk]]":
+    """
+    Convert markdown sections into parent+child pairs.
+
+    Input
+    -----
+    sections : output of md_parser.markdown_to_sections()
+               each element = (doc_title, section_heading, body_text)
+    doc_id   : database document ID
+
+    Output
+    ------
+    (parents, children)
+    - One ParentChunk per H2 section (holds full section text, no embedding)
+    - Multiple ChildChunks per parent (small sub-chunks, embedded for search)
+
+    Key behaviours
+    --------------
+    - Heading is ALWAYS prepended to child text so the embedding captures
+      "which section" the child belongs to.
+    - Page number is propagated from sentence metadata where available.
+      If the body has no page markers, page_range_start defaults to 1.
+    - Sections with very little text (< 20 words) → 1 child = full section.
+    """
+    import re as _re
+
+    parents:  list[ParentChunk]  = []
+    children: list[ChildChunk]   = []
+
+    for section_idx, (doc_title, heading, body) in enumerate(sections):
+        if not body.strip():
+            continue
+
+        effective_heading = heading or doc_title or f"Section {section_idx + 1}"
+
+        # ── Estimate page range from body (heuristic: look for page markers) ──
+        page_nums = [int(m) for m in _re.findall(r"\[?[Pp]age[. ]+(\d+)\]?", body)]
+        page_start = page_nums[0]  if page_nums else (section_idx + 1)
+        page_end   = page_nums[-1] if page_nums else page_start
+
+        parent_id = f"P_{doc_id}_{section_idx}"
+
+        parents.append(ParentChunk(
+            parent_id        = parent_id,
+            heading          = effective_heading,
+            full_text        = body,
+            page_range_start = page_start,
+            page_range_end   = page_end,
+            section_order    = section_idx,
+            doc_id           = doc_id,
+        ))
+
+        # ── Build sentence-level metadata for the sliding window ──────────
+        sentences = _split_sentences(body)
+        if not sentences:
+            sentences = [body]
+        sent_meta = [(s, page_start, effective_heading) for s in sentences]
+
+        # Very short sections → one child = entire section
+        total_words = sum(len(s.split()) for s in sentences)
+        if total_words < child_size // 2:
+            child_text = f"{effective_heading}: {body}"
+            children.append(ChildChunk(
+                child_id    = f"C_{doc_id}_{section_idx}_0",
+                parent_id   = parent_id,
+                text        = child_text,
+                page_number = page_start,
+                chunk_index = 0,
+                heading     = effective_heading,
+            ))
+            continue
+
+        # Normal sections → sliding-window sub-chunks
+        raw_chunks = _chunk_sentences(
+            sent_meta, chunk_size=child_size, overlap=child_overlap
+        )
+        for ci, rc in enumerate(raw_chunks):
+            # Prepend heading so embedding captures section context
+            child_text = (
+                f"{effective_heading}: {rc.text}"
+                if effective_heading and effective_heading.lower() not in rc.text[:60].lower()
+                else rc.text
+            )
+            children.append(ChildChunk(
+                child_id    = f"C_{doc_id}_{section_idx}_{ci}",
+                parent_id   = parent_id,
+                text        = child_text,
+                page_number = rc.page_number,
+                chunk_index = ci,
+                heading     = effective_heading,
+            ))
+
+    return parents, children

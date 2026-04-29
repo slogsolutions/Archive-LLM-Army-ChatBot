@@ -533,6 +533,50 @@ def download_document(
 
 
 # =========================
+# UPDATE DOCUMENT ACCESS LEVEL
+# =========================
+@audit_action("UPDATE_DOCUMENT_ACCESS")
+@router.patch("/{doc_id}/access")
+def update_document_access(
+    doc_id: int,
+    data: dict,
+    user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Update min_visible_rank for a document.
+    Only officers/admins who have scope over the document can change its access level.
+    They cannot set a rank lower than their own (cannot grant access above their level).
+    """
+    if user.role not in ["officer", "unit_admin", "hq_admin", "super_admin"]:
+        raise HTTPException(403, "Only officers and above can change access levels")
+
+    doc = db.get(Document, doc_id)
+    if not doc:
+        raise HTTPException(404, "Document not found")
+
+    # Scope check — must be in same scope as document
+    if user.role == "officer" and (user.unit_id != doc.unit_id or user.branch_id != doc.branch_id):
+        raise HTTPException(403, "Out of scope")
+    if user.role == "unit_admin" and user.unit_id != doc.unit_id:
+        raise HTTPException(403, "Out of scope")
+    if user.role == "hq_admin" and user.hq_id != doc.hq_id:
+        raise HTTPException(403, "Out of scope")
+
+    new_rank = data.get("min_visible_rank")
+    if new_rank is None or not isinstance(new_rank, int) or not (1 <= new_rank <= 6):
+        raise HTTPException(400, "min_visible_rank must be an integer 1–6")
+
+    # Cannot grant access higher than your own level
+    if new_rank < user.rank_level:
+        raise HTTPException(403, "Cannot set access level higher than your own rank")
+
+    doc.min_visible_rank = new_rank
+    db.commit()
+    return {"message": "Access level updated", "min_visible_rank": new_rank}
+
+
+# =========================
 # RE-INDEX DOCUMENT (re-runs full OCR pipeline)
 # =========================
 @audit_action("RE-INDEX_DOCUMENT")

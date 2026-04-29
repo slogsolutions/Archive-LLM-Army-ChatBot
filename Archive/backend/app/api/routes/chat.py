@@ -254,6 +254,70 @@ async def chat_stream_endpoint(
     )
 
 
+@router.post("/async", summary="Non-blocking async chat via Celery worker")
+async def chat_async_endpoint(
+    req: ChatRequest,
+    user=Depends(get_current_user),
+):
+    """
+    Submit a RAG query to the Celery worker queue and return immediately
+    with a task_id.  Poll GET /chat/result/{task_id} for the answer.
+
+    This endpoint never blocks the FastAPI event loop — the 100-500s LLM
+    call happens entirely in the worker process.
+
+    Workflow:
+      POST /chat/async  → { "task_id": "abc123", "status": "queued" }
+      GET  /chat/result/abc123 → 202 (still running) | 200 (done)
+    """
+    from app.workers.ocr_tasks import run_rag_query
+    filters_dict = {
+        k: v for k, v in req.filters.model_dump().items() if v is not None
+    } or None
+
+    task = run_rag_query.delay(
+        query=req.query,
+        filters=filters_dict,
+        user_id=user.id,
+        session_id=req.session_id,
+        model=req.model,
+        top_k=req.top_k,
+    )
+    return {"task_id": task.id, "status": "queued"}
+
+
+@router.get("/result/{task_id}", summary="Poll async chat result")
+async def chat_result_endpoint(
+    task_id: str,
+    user=Depends(get_current_user),  # noqa: ARG001 — auth guard
+):
+    """
+    Poll for the result of a previously queued async chat task.
+
+    Returns:
+      202 { "status": "pending" }        — still running
+      200 { "status": "ok", answer, … }  — complete
+      200 { "status": "error", error }   — failed
+    """
+    from celery.result import AsyncResult
+    from app.core.queue import celery_app as _app
+    r = AsyncResult(task_id, app=_app)
+
+    if r.state in ("PENDING", "STARTED", "RETRY"):
+        from fastapi import Response
+        return Response(
+            content='{"status":"pending"}',
+            status_code=202,
+            media_type="application/json",
+        )
+
+    result = r.result or {}
+    if r.state == "FAILURE":
+        result = {"status": "error", "error": str(r.result)}
+
+    return result
+
+
 @router.delete("/session/{session_id}", summary="Clear conversation history")
 async def clear_session(
     session_id: str,

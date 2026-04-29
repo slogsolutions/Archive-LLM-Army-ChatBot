@@ -92,11 +92,30 @@ _INDEX_MAPPING = {
             "doc_type":        {"type": "keyword"},
             "year":            {"type": "integer"},
 
+            # ========== DOCUMENT TITLE (extracted from PDF header) ==========
+            "doc_title": {
+                "type": "text",
+                "analyzer": "doc_analyzer",
+            },
+
             # ========== KEYWORDS (user-supplied + auto-extracted) ==========
             "keywords": {
                 "type": "text",
                 "analyzer": "doc_analyzer",
             },
+
+            # ========== PARENT-CHILD STRUCTURE ==========
+            # is_parent=true  → parent/section doc (no embedding, has full_section_text)
+            # is_parent=false → child/chunk doc   (has embedding, has parent_id)
+            # Old flat chunks (no is_parent field) are treated as children by default.
+            "is_parent":         {"type": "boolean"},
+            "parent_id":         {"type": "keyword"},   # "P_{doc_id}_{section_idx}"
+            "child_id":          {"type": "keyword"},   # "C_{doc_id}_{section_idx}_{child_idx}"
+            "full_section_text": {"type": "text", "analyzer": "doc_analyzer"},
+            "page_range_start":  {"type": "integer"},
+            "page_range_end":    {"type": "integer"},
+            "child_count":       {"type": "integer"},
+            "section_order":     {"type": "integer"},
 
             # ========== ACCESS CONTROL ==========
             "uploaded_by":     {"type": "integer"},
@@ -193,13 +212,27 @@ def hybrid_search(
     if rbac_clauses:
         filter_clauses.extend(rbac_clauses)
 
-    # BM25 text query — multi_match across content + keywords (keywords boosted 2×)
+    # Always search CHILD chunks only (is_parent=false or null for old flat chunks).
+    # Parent docs are fetched separately via fetch_parents_by_ids() after retrieval.
+    # The `{"bool": {"should": ...}}` handles both new children and old flat chunks.
+    filter_clauses.append({
+        "bool": {
+            "should": [
+                {"term":   {"is_parent": False}},
+                {"bool":   {"must_not": {"exists": {"field": "is_parent"}}}},
+            ],
+            "minimum_should_match": 1,
+        }
+    })
+
+    # BM25 text query — multi_match across content + heading + doc_title + keywords
+    # Boost order: keywords (3×) > doc_title (2×) > heading (2×) > content (1×)
     bm25_query: dict = {
         "bool": {
             "must": {
                 "multi_match": {
                     "query":    query_text,
-                    "fields":   ["content", "keywords^2"],
+                    "fields":   ["content", "heading^2", "doc_title^2", "keywords^3"],
                     "operator": "or",
                     "fuzziness": "AUTO",
                 }
@@ -361,6 +394,46 @@ def get_all_list_items_by_category(
         return resp["hits"]["hits"]
     except Exception as e:
         print(f"[ES] get_all_list_items_by_category error: {e}")
+        return []
+
+
+def fetch_parents_by_ids(
+    parent_ids: list[str],
+    es: Elasticsearch = None,
+) -> list[dict]:
+    """
+    Fetch full parent/section documents by parent_id after child retrieval.
+    Returns the _source of each parent doc (includes full_section_text,
+    heading, page_range_start/end, doc_id, file_name, etc.).
+    Called by retriever.search() when use_parent_child=True.
+    """
+    if not parent_ids:
+        return []
+    if es is None:
+        es = get_es()
+
+    try:
+        resp = es.search(
+            index=INDEX_NAME,
+            query={
+                "bool": {
+                    "filter": [
+                        {"term":  {"is_parent": True}},
+                        {"terms": {"parent_id": parent_ids}},
+                    ]
+                }
+            },
+            size=min(len(parent_ids) + 10, 50),
+            _source=[
+                "parent_id", "heading", "full_section_text",
+                "page_range_start", "page_range_end", "section_order",
+                "doc_id", "file_name", "doc_type", "branch", "year",
+                "doc_title", "child_count",
+            ],
+        )
+        return [h["_source"] for h in resp["hits"]["hits"]]
+    except Exception as e:
+        print(f"[ES] fetch_parents_by_ids error: {e}")
         return []
 
 

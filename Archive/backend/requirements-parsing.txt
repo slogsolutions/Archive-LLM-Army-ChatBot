@@ -1,0 +1,15 @@
+# Optional PDF parsing upgrades
+# Install whichever strategies you want; the system falls back gracefully.
+#
+# Strategy 1: Marker  (fastest, best for digital PDFs)
+#   pip install marker-pdf
+#   First run downloads layout models (~500 MB) to ~/.cache/
+marker-pdf
+
+# Strategy 2: Docling  (IBM, excellent for tables + complex layouts)
+#   pip install docling
+#   Downloads models on first use (~1 GB total)
+docling
+
+# PyMuPDF is already in requirements.txt (strategy 3 — always available)
+# PaddleOCR is already in requirements.txt (strategy 4 — always available)

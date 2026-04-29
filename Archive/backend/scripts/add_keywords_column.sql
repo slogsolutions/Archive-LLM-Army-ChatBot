@@ -7,3 +7,6 @@ ALTER TABLE documents
 
 ALTER TABLE document_chunks
   ADD COLUMN IF NOT EXISTS keywords TEXT;
+
+-- doc_title is not stored in DB (derived at ingest time from PDF parsing)
+-- It lives only in Elasticsearch as a searchable field per chunk.

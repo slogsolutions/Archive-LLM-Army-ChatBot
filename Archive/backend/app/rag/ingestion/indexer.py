@@ -79,6 +79,9 @@ def index_chunks(
             "embedding":        embedding,
             "is_list_item":     isinstance(chunk, ListItem),
 
+            # Document title (from PDF header font detection)
+            "doc_title":        metadata.get("doc_title", ""),
+
             # Keywords: doc-level user-supplied + auto-extracted
             "keywords":         metadata.get("keywords", ""),
 
@@ -168,6 +171,112 @@ def _index_prose_chunk(doc_body: dict, chunk: Chunk) -> None:
         "heading":          chunk.heading or "",
         "char_offset":      chunk.char_offset,
     })
+
+
+def index_parent_child(
+    doc_id:           int,
+    parents:          "List",       # list[ParentChunk]
+    children:         "List",       # list[ChildChunk]
+    child_embeddings: "List[list]", # one per child only
+    metadata:         dict,
+) -> "tuple[int, int]":
+    """
+    Bulk-index parent sections (no embedding) and child sub-chunks (with embedding).
+
+    Parent docs   → is_parent=True,  no embedding vector, has full_section_text
+    Child docs    → is_parent=False, has embedding vector, has parent_id FK
+
+    Returns
+    -------
+    (n_parents_indexed, n_children_indexed)
+    """
+    if not parents and not children:
+        return 0, 0
+
+    from app.rag.ingestion.chunker import ParentChunk, ChildChunk
+    from datetime import datetime, timezone
+
+    es  = _get_client()
+    now = datetime.now(timezone.utc).isoformat()
+
+    def _meta(m: dict) -> dict:
+        return {
+            "branch":           m.get("branch", ""),
+            "unit_id":          m.get("unit_id"),
+            "hq_id":            m.get("hq_id"),
+            "doc_type":         m.get("doc_type", ""),
+            "year":             m.get("year"),
+            "file_name":        m.get("file_name", ""),
+            "file_type":        m.get("file_type", ""),
+            "doc_title":        m.get("doc_title", ""),
+            "keywords":         m.get("keywords", ""),
+            "uploaded_by":      m.get("uploaded_by"),
+            "min_visible_rank": m.get("min_visible_rank", 6),
+            "created_at":       now,
+            "doc_id":           doc_id,
+        }
+
+    operations = []
+
+    # ── Parent docs ───────────────────────────────────────────────────────
+    for parent in parents:
+        _id = parent.parent_id
+        operations.append({"index": {"_index": INDEX_NAME, "_id": _id}})
+        operations.append({
+            **_meta(metadata),
+            "is_parent":         True,
+            "parent_id":         parent.parent_id,
+            "child_id":          None,
+            "heading":           parent.heading,
+            "content":           parent.full_text[:300],   # short preview for BM25
+            "full_section_text": parent.full_text,
+            "page_number":       parent.page_range_start,
+            "page_range_start":  parent.page_range_start,
+            "page_range_end":    parent.page_range_end,
+            "section_order":     parent.section_order,
+            "child_count":       sum(1 for c in children if c.parent_id == parent.parent_id),
+            "chunk_index":       parent.section_order,
+            "total_chunks":      len(parents),
+        })
+
+    # ── Child docs ────────────────────────────────────────────────────────
+    for child, embedding in zip(children, child_embeddings):
+        _id = child.child_id
+        operations.append({"index": {"_index": INDEX_NAME, "_id": _id}})
+        operations.append({
+            **_meta(metadata),
+            "is_parent":     False,
+            "parent_id":     child.parent_id,
+            "child_id":      child.child_id,
+            "content":       child.text,
+            "embedding":     embedding,
+            "heading":       child.heading,
+            "page_number":   child.page_number,
+            "chunk_index":   child.chunk_index,
+            "total_chunks":  0,   # not meaningful for children
+        })
+
+    # ── Bulk index ────────────────────────────────────────────────────────
+    try:
+        resp   = es.bulk(body=operations, refresh=True)
+        errors = [
+            item for item in resp.get("items", [])
+            if "error" in item.get("index", {})
+        ]
+        if errors:
+            print(f"[INDEXER] {len(errors)} parent-child bulk errors for doc_id={doc_id}")
+            for err in errors[:3]:
+                print(f"  {err['index']['error']}")
+
+        n_ok = (len(parents) + len(children)) - len(errors)
+        n_parents   = len(parents)   - sum(1 for e in errors if "P_" in e["index"]["_id"])
+        n_children  = len(children)  - sum(1 for e in errors if "C_" in e["index"]["_id"])
+        print(f"[INDEXER] parent-child: {n_parents} parents + {n_children} children indexed")
+        return n_parents, n_children
+
+    except Exception as e:
+        print(f"[INDEXER] index_parent_child bulk failed for doc_id={doc_id}: {e}")
+        return 0, 0
 
 
 def index_document(
