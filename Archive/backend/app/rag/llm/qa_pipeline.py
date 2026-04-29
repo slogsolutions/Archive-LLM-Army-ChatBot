@@ -6,7 +6,7 @@ from typing import Iterator, List, Optional
 from app.rag.retriever.retriever import search, SearchResult
 from app.rag.retriever.query_parser import detect_query_intent
 from app.rag.llm.llm_client import chat, is_ollama_running
-from app.rag.llm.context_builder import build_context, get_source_summary
+from app.rag.llm.context_builder import build_context, get_source_summary, build_parent_child_context
 from app.rag.llm.prompt_builder import build_system_prompt, build_user_prompt
 from app.rag.llm.faithfulness_guard import check_faithfulness, safe_answer
 from app.rag.llm.citation_injector import inject_citations
@@ -102,7 +102,14 @@ def ask(
     print(f"[QA] {len(results)} chunks retrieved")
 
     # ── Stage 5: Context + first-pass LLM call ────────────────────────────
-    context        = build_context(results, query)
+    # Use parent-child context when results include fetched parent sections
+    # (new ingestion format). Falls back to flat context for old documents.
+    has_parents = any(r._parent_doc for r in results)
+    context     = (
+        build_parent_child_context(results, query)
+        if has_parents
+        else build_context(results, query)
+    )
     system_prompt  = build_system_prompt(results=results, intent=intent)
     user_prompt    = _build_prompt_with_history(query, context, history_block)
 
@@ -138,7 +145,12 @@ def ask(
         )
         if hops > 0:
             # Rebuild context and regenerate answer with expanded results
-            context     = build_context(results, query)
+            has_parents = any(r._parent_doc for r in results)
+            context     = (
+                build_parent_child_context(results, query)
+                if has_parents
+                else build_context(results, query)
+            )
             user_prompt = _build_prompt_with_history(query, context, history_block)
             print(f"[QA] Re-answering after {hops} hop(s)…")
             raw_answer  = chat(prompt=user_prompt, system=system_prompt, model=model)

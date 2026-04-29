@@ -3,7 +3,7 @@ import re
 
 from app.rag.ingestion.cleaner import clean_text
 from app.rag.ingestion.ocr_cleaner import apply_ocr_pipeline
-from app.rag.ingestion.parser import extract_metadata, ParsedDocument, ParsedPage
+from app.rag.ingestion.parser import extract_metadata, ParsedDocument, ParsedPage, _parse_pdf
 from app.rag.ingestion.chunker import chunk_document, Chunk, ListItem
 from app.rag.embedding.embedder import get_embeddings
 from app.rag.ingestion.indexer import index_chunks
@@ -222,3 +222,126 @@ def ingest_document(doc, parsed_doc: ParsedDocument | None = None) -> int:
     print(f"[PIPELINE] doc_id={doc.id}: indexed {count}/{len(chunks)} chunks ✅")
 
     return count
+
+
+# ---------------------------------------------------------------------------
+# V2 PIPELINE — parent-child structured ingestion
+# ---------------------------------------------------------------------------
+
+def ingest_document_v2(doc, parsed_doc: "ParsedDocument | None" = None) -> int:
+    """
+    Parent-child ingestion pipeline (new format, co-exists with v1).
+
+    Uses the same preprocessing steps as ingest_document() but replaces
+    the flat sliding-window chunking with structured parent-child chunking
+    driven by H2 headings from the Markdown output of md_parser.
+
+    Steps
+    -----
+    1.  Build / obtain ParsedDocument (same as v1 — downloads from MinIO, runs md_parser)
+    2.  OCR cleaning + generic text cleaning (same as v1)
+    3.  Extract metadata (same as v1, includes doc_title)
+    4.  markdown_to_sections() → [(title, heading, body)]
+    5.  chunk_into_parent_child() → (ParentChunk[], ChildChunk[])
+    6.  Embed ONLY child chunks
+    7.  Delete old ES docs for this doc_id
+    8.  index_parent_child() → bulk-index parents + children
+
+    Returns
+    -------
+    Number of child chunks indexed.
+    """
+    print(f"[PIPELINE-V2] Ingesting doc_id={doc.id}")
+
+    # ── Steps 1-3: same as v1 ──────────────────────────────────────────────
+    if parsed_doc is None:
+        local_pdf_path = None
+        ocr_fallback   = (doc.corrected_text or doc.ocr_text or "").strip()
+        is_pdf = (doc.file_type or "").lower() in ("application/pdf", "pdf") \
+                 or (doc.file_name or "").lower().endswith(".pdf")
+
+        if is_pdf and doc.minio_path:
+            try:
+                from app.services.minio_service import download_file
+                import tempfile, os
+                tmp = os.path.join(tempfile.gettempdir(), f"v2_{doc.id}_{doc.file_name}")
+                download_file(doc.minio_path, tmp)
+                local_pdf_path = tmp
+            except Exception as e:
+                print(f"[PIPELINE-V2] MinIO download failed ({e}) — using stored text")
+
+        if local_pdf_path:
+            parsed_doc = _parse_pdf(local_pdf_path, ocr_text=ocr_fallback)
+            try:
+                import os
+                os.remove(local_pdf_path)
+            except Exception:
+                pass
+        elif ocr_fallback:
+            page_texts = [t.strip() for t in re.split(r"\n{2,}", ocr_fallback) if t.strip()]
+            parsed_doc = ParsedDocument(
+                pages=[ParsedPage(page_number=i + 1, text=t) for i, t in enumerate(page_texts)],
+                file_type=doc.file_type or "",
+            )
+        else:
+            print(f"[PIPELINE-V2] doc_id={doc.id}: no content — skipping")
+            return 0
+
+    # Apply OCR and generic cleaning (identical to v1)
+    for page in parsed_doc.pages:
+        page.text = apply_ocr_pipeline(page.text)
+    for page in parsed_doc.pages:
+        page.text = clean_text(page.text)
+    parsed_doc.pages = [p for p in parsed_doc.pages if p.text.strip()]
+
+    if not parsed_doc.pages:
+        print(f"[PIPELINE-V2] doc_id={doc.id}: empty after cleaning — skipping")
+        return 0
+
+    metadata = extract_metadata(doc, parsed_doc)
+
+    # ── Step 4: Get sections from Markdown ────────────────────────────────
+    from app.rag.ingestion.md_parser import markdown_to_sections
+    from app.rag.ingestion.chunker   import chunk_into_parent_child
+    from app.rag.ingestion.indexer   import index_parent_child
+    from app.rag.vector_store.elastic_store import delete_doc_chunks
+
+    md_text  = parsed_doc.full_text           # joined page texts (Markdown from md_parser)
+    sections = markdown_to_sections(md_text)  # → [(title, heading, body)]
+
+    if not sections:
+        print(f"[PIPELINE-V2] doc_id={doc.id}: no sections detected — falling back to v1")
+        return ingest_document(doc, parsed_doc)
+
+    print(f"[PIPELINE-V2] doc_id={doc.id}: {len(sections)} sections detected")
+
+    # ── Step 5: Parent-child chunking ─────────────────────────────────────
+    parents, children = chunk_into_parent_child(sections, doc_id=doc.id)
+    print(f"[PIPELINE-V2] doc_id={doc.id}: {len(parents)} parents, {len(children)} children")
+
+    if not children:
+        print(f"[PIPELINE-V2] doc_id={doc.id}: no children generated — falling back to v1")
+        return ingest_document(doc, parsed_doc)
+
+    # ── Step 6: Embed children only ───────────────────────────────────────
+    child_texts = [c.text for c in children]
+    print(f"[PIPELINE-V2] doc_id={doc.id}: embedding {len(child_texts)} children…")
+    child_embeddings = get_embeddings(child_texts)
+
+    if not child_embeddings or len(child_embeddings) != len(children):
+        print(f"[PIPELINE-V2] doc_id={doc.id}: embedding mismatch — skipping")
+        return 0
+
+    # ── Step 7: Delete old ES docs ────────────────────────────────────────
+    try:
+        delete_doc_chunks(doc.id)
+    except Exception as e:
+        print(f"[PIPELINE-V2] doc_id={doc.id}: ES delete warning — {e}")
+
+    # ── Step 8: Index parents + children ──────────────────────────────────
+    n_parents, n_children = index_parent_child(
+        doc.id, parents, children, child_embeddings, metadata
+    )
+    print(f"[PIPELINE-V2] doc_id={doc.id}: done ✅  "
+          f"{n_parents} parents + {n_children} children")
+    return n_children

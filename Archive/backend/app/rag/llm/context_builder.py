@@ -187,3 +187,90 @@ def _format_prose(index: int, r: "SearchResult") -> str:
         f"[Source {index} | {r.file_name} | Page {r.page_number}{heading} | {r.section}]\n"
         f"{content}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Parent-child context builder
+# ---------------------------------------------------------------------------
+
+# Per-parent section char budget.  1 200 chars ≈ 300 tokens — a full H2
+# section comfortably fits.  The LLM gets complete section text instead of
+# a fragmented child chunk, dramatically reducing hallucination.
+MAX_SECTION_CHARS = 1_200
+
+
+def build_parent_child_context(
+    results: "List[SearchResult]",
+    query: str = "",    # noqa: ARG001 — reserved for future query-highlighting
+) -> str:
+    """
+    Build LLM context using full parent sections.
+
+    For results with a populated _parent_doc (new parent-child index format):
+      → Use the full section text (up to MAX_SECTION_CHARS)
+      → Label with [Source N | file | p.X–Y | Heading]
+
+    For results WITHOUT _parent_doc (old flat index format):
+      → Fall back to build_context() prose format
+
+    This lets the two ingestion formats co-exist without any breaking changes.
+    The LLM always receives complete, well-structured sections regardless of
+    which format the document was indexed with.
+    """
+    # Separate results by format
+    has_parent  = [r for r in results if r._parent_doc]
+    flat_only   = [r for r in results if not r._parent_doc]
+
+    blocks: List[str] = []
+    total_chars = 0
+    source_idx  = 1
+
+    # ── Parent-child results → full section text ──────────────────────────
+    # Deduplicate by parent_id (multiple children may point to same parent)
+    seen_pids: set[str] = set()
+    ordered: "List[SearchResult]" = []
+    for r in sorted(has_parent, key=lambda x: -x.score):
+        pid = r.parent_id or ""
+        if pid not in seen_pids:
+            seen_pids.add(pid)
+            ordered.append(r)
+
+    for r in ordered:
+        if total_chars >= MAX_CONTEXT_CHARS:
+            break
+        p = r._parent_doc
+        if not p:
+            continue
+
+        section_text = (p.get("full_section_text") or r.content or "")[:MAX_SECTION_CHARS]
+        heading      = p.get("heading") or r.heading or ""
+        file_nm      = p.get("file_name") or r.file_name
+        p_start      = p.get("page_range_start") or r.page_number
+        p_end        = p.get("page_range_end")   or p_start
+        page_ref     = f"p.{p_start}–{p_end}" if p_end != p_start else f"p.{p_start}"
+
+        block = (
+            f"[Source {source_idx} | {file_nm} | {page_ref} | {heading}]\n"
+            f"{section_text}"
+        )
+        blocks.append(block)
+        total_chars += len(block)
+        source_idx  += 1
+
+    # ── Flat results → existing prose format ─────────────────────────────
+    if flat_only and total_chars < MAX_CONTEXT_CHARS:
+        # Re-use the existing prose formatter; renumber sources from source_idx
+        flat_blocks: List[str] = []
+        for i, r in enumerate(flat_only, start=source_idx):
+            if total_chars >= MAX_CONTEXT_CHARS:
+                break
+            block = _format_result(i, r)
+            flat_blocks.append(block)
+            total_chars += len(block)
+        if flat_blocks:
+            blocks.append("\n---\n".join(flat_blocks))
+
+    context = "\n\n---\n\n".join(blocks)
+    n_parents = source_idx - 1
+    print(f"[CONTEXT] parent-child: {n_parents} sections + {len(flat_only)} flat, {total_chars} chars")
+    return context
