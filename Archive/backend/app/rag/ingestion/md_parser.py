@@ -139,28 +139,90 @@ def validate_markdown(result: ConversionResult) -> list[str]:
 # Strategy 1: Marker
 # ---------------------------------------------------------------------------
 
+def _marker_device() -> str:
+    """Return device string from hw_config."""
+    try:
+        from app.rag.hw_config import MARKER_DEVICE
+        return MARKER_DEVICE
+    except Exception:
+        pass
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return "cuda"
+    except Exception:
+        pass
+    return "cpu"
+
+
+def _unload_marker_models() -> None:
+    """
+    Release Marker PyTorch models from VRAM / RAM after each document.
+    Critical for 6 GB cards: Marker takes ~2-3 GB; unloading frees it
+    for the embedding model and cross-encoder used during search.
+    """
+    try:
+        from app.rag.hw_config import MARKER_UNLOAD_AFTER_USE
+        if not MARKER_UNLOAD_AFTER_USE:
+            return
+    except Exception:
+        pass
+
+    import gc
+    try:
+        # Old Marker API
+        try:
+            from marker.models import unload_all_models
+            unload_all_models()
+        except (ImportError, AttributeError):
+            pass
+
+        gc.collect()
+
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.synchronize()
+                free_gb = (torch.cuda.get_device_properties(0).total_memory
+                           - torch.cuda.memory_reserved(0)) / (1024 ** 3)
+                print(f"[MD_PARSER] VRAM freed — {free_gb:.1f} GB now available")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[MD_PARSER] Unload warning: {e}")
+
+
 def try_marker(file_path: str) -> Optional[ConversionResult]:
     """
     Use Marker (pip install marker-pdf) to convert PDF → Markdown.
-    Marker runs a layout detection model + OCR for scanned pages.
-    Produces structured Markdown with proper headings and tables.
+    Automatically uses GPU (CUDA) when available — 10-20× faster than CPU.
     """
     try:
+        device = _marker_device()
+
+        # Tell all PyTorch/HuggingFace sub-libraries to use the same device
+        os.environ.setdefault("TORCH_DEVICE", device)
+
         # Marker's API changed across versions — handle both
         try:
             from marker.convert import convert_single_pdf
             from marker.models import load_all_models
 
-            models = load_all_models()
+            models = load_all_models(device=device)
             full_text, images, metadata = convert_single_pdf(file_path, models)
-        except ImportError:
+        except (ImportError, TypeError):
             # Newer Marker API (>= 0.2)
             from marker.converters.pdf import PdfConverter
             from marker.models import create_model_dict
             from marker.config.parser import ConfigParser
 
-            config  = ConfigParser({})
-            models  = create_model_dict()
+            try:
+                from app.rag.hw_config import MARKER_BATCH_MULT
+            except Exception:
+                MARKER_BATCH_MULT = 1
+            config  = ConfigParser({"device": device, "batch_multiplier": MARKER_BATCH_MULT})
+            models  = create_model_dict(device=device)
             conv    = PdfConverter(config=config.generate_config_dict(), artifact_dict=models)
             result  = conv(file_path)
             full_text = result.markdown
@@ -170,6 +232,21 @@ def try_marker(file_path: str) -> Optional[ConversionResult]:
             return None
 
         md = full_text.strip()
+
+        # Unload Marker from VRAM before returning (critical for 6 GB cards)
+        _unload_marker_models()
+
+        # Save .md to disk for debugging
+        try:
+            debug_dir = Path(__file__).resolve().parents[2] / "md_debug"
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            stem = Path(file_path).stem[:60]
+            debug_path = debug_dir / f"{stem}.md"
+            debug_path.write_text(md, encoding="utf-8")
+            print(f"[MD_PARSER] Debug .md saved → {debug_path}")
+        except Exception as _e:
+            print(f"[MD_PARSER] Could not save debug .md: {_e}")
+
         return ConversionResult(
             markdown    = md,
             method      = "marker",
@@ -190,35 +267,48 @@ def try_marker(file_path: str) -> Optional[ConversionResult]:
 # ---------------------------------------------------------------------------
 
 def try_docling(file_path: str) -> Optional[ConversionResult]:
-    """
-    Use Docling (pip install docling) to convert PDF → Markdown.
-    IBM's document converter — excellent for complex layouts and tables.
-    """
+    print("📄 [DOCLING] Function entered")
+
     try:
+        print("📦 [DOCLING] Importing DocumentConverter...")
         from docling.document_converter import DocumentConverter
 
+        print("⚙️ [DOCLING] Creating converter...")
         converter = DocumentConverter()
-        result    = converter.convert(file_path)
-        md        = result.document.export_to_markdown()
+
+        print(f"📄 [DOCLING] File path: {file_path}")
+
+        print("🚨 [DOCLING] BEFORE convert() — layout will start now")
+        
+        result = converter.convert(file_path)   # 💥 MOST LIKELY CRASH HERE
+        
+        print("✅ [DOCLING] AFTER convert() — SUCCESS")
+
+        print("🧾 [DOCLING] Exporting markdown...")
+        md = result.document.export_to_markdown()
+
+        print(f"📊 [DOCLING] Markdown length: {len(md)}")
 
         if not md:
+            print("⚠️ [DOCLING] Empty markdown")
             return None
 
         has_tables = bool(re.search(r"^\|", md, re.MULTILINE))
+
         return ConversionResult(
-            markdown    = md.strip(),
-            method      = "docling",
-            quality     = score_markdown(md),
-            has_tables  = has_tables,
+            markdown=md.strip(),
+            method="docling",
+            quality=score_markdown(md),
+            has_tables=has_tables,
         )
 
     except ImportError:
-        print("[MD_PARSER] Docling not installed. Run: pip install docling")
-        return None
-    except Exception as e:
-        print(f"[MD_PARSER] Docling failed: {e}")
+        print("[DOCLING] ❌ Not installed")
         return None
 
+    except Exception as e:
+        print(f"[DOCLING] ❌ Python ERROR: {e}")
+        return None
 
 # ---------------------------------------------------------------------------
 # Strategy 3: PyMuPDF font-aware (no extra install needed)
@@ -418,10 +508,12 @@ def convert_to_markdown(
             return r
 
         # ── Strategy 2: Docling ──────────────────────────────────────────
-        print("[MD_PARSER] Trying Docling…")
-        r = try_docling(file_path)
-        if _try(r, "Docling") is not None:
-            return r
+        print("🚀 START Docling")
+        try:
+            r = try_docling(file_path)
+        except Exception as e:
+                print(f"💥 Docling crashed completely: {e}")
+                r = None
 
         # ── Strategy 3: PyMuPDF (always available) ───────────────────────
         print("[MD_PARSER] Trying PyMuPDF font-aware…")
@@ -447,50 +539,107 @@ def convert_to_markdown(
 # Markdown → ParsedDocument helper (used by parser.py)
 # ---------------------------------------------------------------------------
 
+def _clean_heading(text: str) -> str:
+    """Strip markdown formatting from a heading string."""
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)   # **bold**
+    text = re.sub(r"\*(.+?)\*",     r"\1", text)   # *italic*
+    text = re.sub(r"`(.+?)`",       r"\1", text)   # `code`
+    return text.strip()
+
+
+_BARE_PAGE_RE = re.compile(r"^\d{1,3}$")
+
+
 def markdown_to_sections(
     md: str,
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str, int]]:
     """
-    Parse markdown into a list of (title, heading, body) triples.
+    Parse markdown into a list of (doc_title, heading, body, page_start) tuples.
 
-    - Lines starting with `# ` → document title (first occurrence only)
-    - Lines starting with `## ` or `### ` → section heading
-    - Everything else → body text for the current section
+    Heading detection
+    -----------------
+    Accepts ALL heading levels (# through ######) so that Marker output using
+    #### and ##### is handled correctly.  The first h1 (# ...) that looks like
+    a document title is captured as doc_title; all remaining headings become
+    section boundaries.
 
-    Returns list of (doc_title, section_heading, body_text).
-    One entry per section.  The first section may have an empty heading
-    (content before the first `##`).
+    Bold/italic markers are stripped from heading text (Marker wraps headings
+    in **...**).
+
+    Page number tracking
+    --------------------
+    Marker embeds bare page numbers as standalone lines (just "2", "3", …).
+    These are detected and stripped from body text; the current page value is
+    propagated to the section's page_start.
+
+    Returns
+    -------
+    list of (doc_title, section_heading, body_text, page_start)
     """
-    doc_title    = ""
-    cur_heading  = ""
-    cur_body:  list[str] = []
-    sections:  list[tuple[str, str, str]] = []
+    doc_title:   str      = ""
+    cur_heading: str      = ""
+    cur_body:    list[str] = []
+    cur_page:    int       = 1
+    sections: list[tuple[str, str, str, int]] = []
+    section_page_start: int = 1
+
+    _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)")
 
     for raw_line in md.splitlines():
         line = raw_line.rstrip()
 
-        if line.startswith("# ") and not doc_title:
-            doc_title = line[2:].strip()
-            continue
+        # ── Page number detection (bare "2", "3", … lines from Marker) ───
+        stripped = line.strip()
+        if _BARE_PAGE_RE.match(stripped):
+            candidate = int(stripped)
+            if candidate > 0 and (cur_page == 1 or candidate >= cur_page):
+                cur_page = candidate
+            continue   # don't include bare page numbers in body
 
-        if line.startswith("## ") or line.startswith("### "):
-            # Flush current section
+        # ── Heading detection ─────────────────────────────────────────────
+        hm = _HEADING_RE.match(line)
+        if hm:
+            level       = len(hm.group(1))
+            heading_raw = hm.group(2)
+            heading     = _clean_heading(heading_raw)
+
+            if not heading:
+                continue
+
+            # h1 → document title (first occurrence only)
+            if level == 1 and not doc_title:
+                doc_title = heading
+                continue
+
+            # Any other heading level → new section
             body = "\n".join(cur_body).strip()
+            # Remove page-number-only lines that slipped into body
+            body = "\n".join(
+                ln for ln in body.splitlines()
+                if not _BARE_PAGE_RE.match(ln.strip())
+            )
+            body = body.strip()
             if body or cur_heading:
-                sections.append((doc_title, cur_heading, body))
-            cur_heading = line.lstrip("#").strip()
-            cur_body    = []
+                sections.append((doc_title, cur_heading, body, section_page_start))
+
+            cur_heading        = heading
+            cur_body           = []
+            section_page_start = cur_page
             continue
 
-        # Skip horizontal rules
-        if re.match(r"^[-_\*]{3,}$", line):
+        # ── Horizontal rules → skip ───────────────────────────────────────
+        if re.match(r"^[-_*]{3,}$", stripped):
             continue
 
         cur_body.append(line)
 
     # Flush last section
     body = "\n".join(cur_body).strip()
+    body = "\n".join(
+        ln for ln in body.splitlines()
+        if not _BARE_PAGE_RE.match(ln.strip())
+    ).strip()
     if body or cur_heading:
-        sections.append((doc_title, cur_heading, body))
+        sections.append((doc_title, cur_heading, body, section_page_start))
 
     return sections

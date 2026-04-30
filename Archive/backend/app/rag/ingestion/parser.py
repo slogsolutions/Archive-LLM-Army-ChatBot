@@ -128,11 +128,17 @@ def markdown_to_parsed_doc(md: str, method: str = "unknown") -> "ParsedDocument"
     doc_title = sections[0][0] if sections else ""
     pages: List[ParsedPage] = []
 
-    for i, (title, heading, body) in enumerate(sections):
+    for section in sections:
+        # Handle both 3-tuple (legacy) and 4-tuple (new: includes page_start)
+        if len(section) == 4:
+            title, heading, body, page_start = section
+        else:
+            title, heading, body = section
+            page_start = 1
         if not body.strip():
             continue
         pages.append(ParsedPage(
-            page_number=i + 1,
+            page_number=page_start,
             text=body,
             heading=heading,
         ))

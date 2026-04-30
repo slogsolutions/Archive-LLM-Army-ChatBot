@@ -85,10 +85,29 @@ def ask(
             print(f"[QA] Injecting conversation history for session={session_id!r}")
 
     # ── Stage 4: Retrieval ─────────────────────────────────────────────────
+    # Detect compound queries ("tell me about X? and also Y?") and run a
+    # search for each sub-query so neither topic is silently dropped.
     effective_top_k = top_k * 4 if intent == "list" else top_k
-    results: List[SearchResult] = search(
-        query=query, filters=filters, top_k=effective_top_k, user=user,
-    )
+    sub_queries = _split_compound_query(query)
+
+    if len(sub_queries) > 1:
+        print(f"[QA] Compound query — {len(sub_queries)} sub-queries: {sub_queries}")
+        all_results: List[SearchResult] = []
+        for sq in sub_queries:
+            all_results.extend(search(query=sq, filters=filters, top_k=effective_top_k, user=user))
+        # Deduplicate by (doc_id, chunk_index) and cap
+        seen: set[tuple] = set()
+        results = []
+        for r in all_results:
+            k = (r.doc_id, r.chunk_index)
+            if k not in seen:
+                seen.add(k)
+                results.append(r)
+        results = results[:effective_top_k]
+    else:
+        results: List[SearchResult] = search(
+            query=query, filters=filters, top_k=effective_top_k, user=user,
+        )
 
     if not results:
         return QAResponse(
@@ -239,14 +258,6 @@ def ask(
     )
 
 
-def retrieve_only(
-    query: str,
-    filters: dict | None = None,
-    top_k: int = 5,
-    user=None,
-) -> List[SearchResult]:
-    """Retrieval only — no LLM. Used for streaming source preview."""
-    return search(query=query, filters=filters, top_k=top_k, user=user)
 
 
 def _write_rag_log(
@@ -316,6 +327,31 @@ def _write_rag_log(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+import re as _re
+
+
+def _split_compound_query(query: str) -> List[str]:
+    """
+    Split a compound question into individual sub-queries.
+
+    "tell me about X? and also Y?"  →  ["tell me about X", "Y"]
+    "What is A? What is B?"         →  ["What is A", "What is B"]
+    "Single question"               →  ["Single question"]
+    """
+    # Split on '?' followed by connectors, or on '?' before a capital letter
+    parts = _re.split(
+        r"\?\s+(?:and\s+also|and\s+tell\s+me|also\s+tell\s+me|and|also|,\s*also)\s+",
+        query,
+        flags=_re.IGNORECASE,
+    )
+    # Also split on bare '? What' / '? Tell' / '? Explain' patterns
+    if len(parts) == 1:
+        parts = _re.split(r"\?\s+(?=[A-Z])", query)
+
+    cleaned = [p.strip().rstrip("?").strip() for p in parts if p.strip()]
+    return cleaned if cleaned else [query.strip()]
+
 
 def _build_prompt_with_history(
     query: str,

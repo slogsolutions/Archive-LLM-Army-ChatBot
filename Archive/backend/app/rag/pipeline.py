@@ -1,347 +1,256 @@
+"""
+Document Ingestion Pipeline
+============================
+Single entry point: ingest_document(doc, parsed_doc=None)
+
+Strategy
+--------
+Shared pre-processing (steps 1-4) → then picks the best chunking path:
+
+  Path A — Parent-Child (preferred)
+    Requires: markdown sections detected by md_parser
+    Produces: ParentChunk (full sections) + ChildChunk (120-word sub-chunks)
+    Indexed as: is_parent=True/False in ES, parent_id FK on children
+
+  Path B — Flat chunks (fallback)
+    Used when: no markdown sections found (plain-text, old OCR blobs)
+    Produces: Chunk / ListItem (150-word sliding window or numbered list items)
+    Indexed as: flat documents in ES (backward compatible)
+
+Both paths save chunk text to the PostgreSQL document_chunks table for
+admin review, and index embeddings into Elasticsearch.
+"""
 from __future__ import annotations
+import os
 import re
-
-from app.rag.ingestion.cleaner import clean_text
-from app.rag.ingestion.ocr_cleaner import apply_ocr_pipeline
-from app.rag.ingestion.parser import extract_metadata, ParsedDocument, ParsedPage, _parse_pdf
-from app.rag.ingestion.chunker import chunk_document, Chunk, ListItem
-from app.rag.embedding.embedder import get_embeddings
-from app.rag.ingestion.indexer import index_chunks
-from app.rag.vector_store.elastic_store import delete_doc_chunks
-
+import tempfile
 from typing import Union
 
+from app.rag.ingestion.cleaner     import clean_text
+from app.rag.ingestion.ocr_cleaner import apply_ocr_pipeline
+from app.rag.ingestion.parser      import extract_metadata, ParsedDocument, ParsedPage, _parse_pdf
+from app.rag.ingestion.chunker     import (
+    chunk_document, chunk_into_parent_child,
+    Chunk, ListItem, ChildChunk,
+)
+from app.rag.embedding.embedder          import get_embeddings
+from app.rag.ingestion.indexer           import index_chunks, index_parent_child
+from app.rag.vector_store.elastic_store  import delete_doc_chunks
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def ingest_document(doc, parsed_doc: ParsedDocument | None = None) -> int:
     """
-    Full ingestion pipeline for a single document.
+    Ingest a document: parse → clean → chunk → embed → index.
 
-    Steps
-    -----
-    1.  Build ParsedDocument from raw text (if not already parsed)
-    2.  OCR cleaning  — recover list structure, fix artifacts
-    3.  Text cleaning — normalize spacing, preserve list lines
-    4.  Extract metadata
-    5.  Chunk         — returns List[Chunk | ListItem]
-    6.  Dedup         — by .text (works for both types now)
-    7.  Save chunks to Postgres DB
-    8.  Embed         — uses .text (works for both types now)
-    9.  Delete old ES chunks
-    10. Index into Elasticsearch
+    Parameters
+    ----------
+    doc        : ORM Document object (must have .id, .minio_path, .ocr_text, etc.)
+    parsed_doc : Pre-built ParsedDocument, or None to build it here.
 
     Returns
     -------
-    Number of chunks successfully indexed into ES.
+    Number of chunks/children successfully indexed into Elasticsearch.
     """
-    print(f"[PIPELINE] Ingesting doc_id={doc.id}")
+    print(f"[PIPELINE] doc_id={doc.id}  file={doc.file_name}")
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 1. BUILD PARSED DOC
-    # Strategy:
-    #   a) If the original PDF is in MinIO → download to /tmp → run the
-    #      multi-strategy Markdown pipeline (Marker → Docling → PyMuPDF)
-    #   b) Otherwise fall back to the stored ocr_text / corrected_text
-    # ─────────────────────────────────────────────────────────────────────
+    # ── 1. Acquire ParsedDocument ─────────────────────────────────────────
     if parsed_doc is None:
-        local_pdf_path: str | None = None
-        ocr_text_fallback = (doc.corrected_text or doc.ocr_text or "").strip()
-        is_pdf = (doc.file_type or "").lower() in (
-            "application/pdf", "pdf"
-        ) or (doc.file_name or "").lower().endswith(".pdf")
-
-        if is_pdf and doc.minio_path:
-            try:
-                from app.services.minio_service import download_file
-                import tempfile, os
-                tmp_dir  = tempfile.gettempdir()
-                tmp_path = os.path.join(tmp_dir, f"pipeline_{doc.id}_{doc.file_name}")
-                download_file(doc.minio_path, tmp_path)
-                local_pdf_path = tmp_path
-                print(f"[PIPELINE] Downloaded PDF to {tmp_path}")
-            except Exception as dl_err:
-                print(f"[PIPELINE] MinIO download failed ({dl_err}) — will use stored text")
-
-        if local_pdf_path:
-            from app.rag.ingestion.parser import _parse_pdf
-            parsed_doc = _parse_pdf(local_pdf_path, ocr_text=ocr_text_fallback)
-            # Clean up temp file
-            try:
-                import os
-                os.remove(local_pdf_path)
-            except Exception:
-                pass
-        elif ocr_text_fallback:
-            # Plain-text fallback: split on blank lines → pages
-            page_texts = [t.strip() for t in re.split(r"\n{2,}", ocr_text_fallback) if t.strip()]
-            parsed_doc = ParsedDocument(
-                pages=[ParsedPage(page_number=i + 1, text=t) for i, t in enumerate(page_texts)],
-                file_type=doc.file_type or "",
-            )
-        else:
-            print(f"[PIPELINE] doc_id={doc.id}: no PDF and no stored text — skipping")
+        parsed_doc = _acquire_parsed_doc(doc)
+        if parsed_doc is None:
             return 0
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 2. OCR CLEANING  (recover list structure BEFORE generic cleaning)
-    # ─────────────────────────────────────────────────────────────────────
-    #
-    #   apply_ocr_pipeline() does two things:
-    #     a) fix artifacts (broken hyphens, missing hyphens in "ls al" → "ls -al")
-    #     b) recover_list_structure() — restores "1 cmd" → "1. cmd"
-    #
-    #   This MUST run before clean_text(), because clean_text() needs the
-    #   dots to be present to correctly identify and preserve list lines.
-    #
+    # ── 2. OCR + Text cleaning ────────────────────────────────────────────
     for page in parsed_doc.pages:
         page.text = apply_ocr_pipeline(page.text)
-
-    # ─────────────────────────────────────────────────────────────────────
-    # 3. GENERIC TEXT CLEANING
-    # ─────────────────────────────────────────────────────────────────────
     for page in parsed_doc.pages:
         page.text = clean_text(page.text)
 
-    # Drop pages that are empty after cleaning
     parsed_doc.pages = [p for p in parsed_doc.pages if p.text.strip()]
-
     if not parsed_doc.pages:
-        print(f"[PIPELINE] doc_id={doc.id}: no content after cleaning — skipping")
+        print(f"[PIPELINE] doc_id={doc.id}: empty after cleaning — skipping")
         return 0
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 4. METADATA
-    # ─────────────────────────────────────────────────────────────────────
+    # ── 3. Metadata ───────────────────────────────────────────────────────
     metadata = extract_metadata(doc, parsed_doc)
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 5. CHUNK
-    # ─────────────────────────────────────────────────────────────────────
-    chunks: list[Union[Chunk, ListItem]] = chunk_document(
-        parsed_doc.pages, chunk_size=150, overlap=30
+    # ── 4a. Parent-child path (preferred) ────────────────────────────────
+    # Build sections directly from ParsedDocument pages — each page IS one
+    # section (heading + body + page_number) created by markdown_to_parsed_doc.
+    # Do NOT re-parse parsed_doc.full_text because full_text strips headings.
+    sections = [
+        (parsed_doc.title or "", p.heading or "", p.text, p.page_number)
+        for p in parsed_doc.pages
+        if p.text.strip()
+    ]
+    print(f"[PIPELINE] doc_id={doc.id}: {len(sections)} sections from ParsedDocument")
+
+    if sections:
+        parents, children = chunk_into_parent_child(sections, doc_id=doc.id)
+        print(f"[PIPELINE] doc_id={doc.id}: {len(parents)} parents, {len(children)} children")
+        if children:
+            return _ingest_parent_child(doc, parents, children, metadata)
+        print(f"[PIPELINE] doc_id={doc.id}: no children produced — using flat fallback")
+
+    # ── 4b. Flat-chunk fallback ───────────────────────────────────────────
+    return _ingest_flat(doc, parsed_doc, metadata)
+
+
+# ---------------------------------------------------------------------------
+# Private: parent-child path
+# ---------------------------------------------------------------------------
+
+def _ingest_parent_child(doc, parents, children, metadata: dict) -> int:
+    print(f"[PIPELINE] doc_id={doc.id}: parent-child path — "
+          f"{len(parents)} sections, {len(children)} children")
+
+    # Save children to Postgres for admin review
+    _save_chunks_to_db(
+        doc_id=doc.id,
+        chunks=children,
+        metadata=metadata,
+        section_field=lambda c: c.heading,
     )
 
-    if not chunks:
-        print(f"[PIPELINE] doc_id={doc.id}: no chunks generated — skipping")
+    # Embed children only (parents have no embedding)
+    embeddings = get_embeddings([c.text for c in children])
+    if not embeddings or len(embeddings) != len(children):
+        print(f"[PIPELINE] doc_id={doc.id}: embedding mismatch — aborting")
         return 0
 
-    print(f"[PIPELINE] doc_id={doc.id}: {len(chunks)} chunks before dedup "
-          f"({sum(1 for c in chunks if isinstance(c, ListItem))} list items, "
-          f"{sum(1 for c in chunks if isinstance(c, Chunk))} prose chunks)")
-
-    # ─────────────────────────────────────────────────────────────────────
-    # 6. DEDUP
-    #
-    #   FIX: old code used c.text which crashed on ListItem (no .text attr).
-    #   Both types now expose .text (ListItem.text is a property → full_text).
-    # ─────────────────────────────────────────────────────────────────────
-    seen: set[str] = set()
-    unique_chunks: list[Union[Chunk, ListItem]] = []
-
-    for c in chunks:
-        key = c.text.strip().lower()       # ← works for Chunk AND ListItem
-        if key not in seen:
-            seen.add(key)
-            unique_chunks.append(c)
-
-    chunks = unique_chunks
-    print(f"[PIPELINE] doc_id={doc.id}: {len(chunks)} chunks after dedup")
-
-    # ─────────────────────────────────────────────────────────────────────
-    # 7. SAVE TO DB
-    #
-    #   FIX: old code accessed c.page_number, c.chunk_index, etc. on ListItem
-    #   which had none of those attrs.  Now ListItem has them (set in chunker).
-    # ─────────────────────────────────────────────────────────────────────
-    from app.models.document_chunks import DocumentChunk
-    from app.core.database import SessionLocal
-
-    db = SessionLocal()
-    try:
-        db.query(DocumentChunk).filter(
-            DocumentChunk.document_id == doc.id
-        ).delete()
-
-        for c in chunks:
-            db.add(DocumentChunk(
-                document_id=doc.id,
-                chunk_text=c.text,                      # ← .text on both types
-                page=c.page_number,                     # ← on both types
-                section=metadata.get("section") or (c.section if isinstance(c, ListItem) else ""),
-                chunk_index=c.chunk_index,              # ← on both types
-                total_chunks=c.total_chunks,            # ← on both types
-                heading=c.heading,                      # ← on both types
-                char_offset=c.char_offset,              # ← on both types
-            ))
-
-        db.commit()
-        print(f"[PIPELINE] doc_id={doc.id}: saved {len(chunks)} chunks to DB")
-    except Exception as e:
-        db.rollback()
-        print(f"[PIPELINE] doc_id={doc.id}: DB save failed — {e}")
-        raise
-    finally:
-        db.close()
-
-    # ─────────────────────────────────────────────────────────────────────
-    # 8. EMBEDDING
-    #
-    #   FIX: old code used [c.text for c in chunks] which failed on ListItem.
-    #   Now c.text works uniformly.
-    #
-    #   FIX: embedder.py returned `embeddings.tolist(),` (trailing comma
-    #   made it a tuple). Fixed in embedder.py — returns a plain list now.
-    # ─────────────────────────────────────────────────────────────────────
-    texts = [c.text for c in chunks]           # ← works for both types
-
-    print(f"[PIPELINE] doc_id={doc.id}: embedding {len(texts)} chunks…")
-    embeddings = get_embeddings(texts)
-
-    if not embeddings or len(embeddings) != len(chunks):
-        print(f"[PIPELINE] doc_id={doc.id}: embedding count mismatch "
-              f"(got {len(embeddings)}, expected {len(chunks)}) — skipping")
-        return 0
-
-    if len(embeddings[0]) != 768:
-        raise ValueError(
-            f"[PIPELINE] Embedding dimension mismatch: "
-            f"got {len(embeddings[0])}, expected 768"
-        )
-
-    # ─────────────────────────────────────────────────────────────────────
-    # 9. DELETE OLD ES CHUNKS
-    # ─────────────────────────────────────────────────────────────────────
+    # Delete old ES docs, bulk-index parents + children
     try:
         delete_doc_chunks(doc.id)
     except Exception as e:
         print(f"[PIPELINE] doc_id={doc.id}: ES delete warning — {e}")
 
-    # ─────────────────────────────────────────────────────────────────────
-    # 10. INDEX INTO ELASTICSEARCH
-    # ─────────────────────────────────────────────────────────────────────
-    count = index_chunks(doc.id, chunks, embeddings, metadata)
-    print(f"[PIPELINE] doc_id={doc.id}: indexed {count}/{len(chunks)} chunks ✅")
+    n_parents, n_children = index_parent_child(
+        doc.id, parents, children, embeddings, metadata
+    )
+    print(f"[PIPELINE] doc_id={doc.id}: indexed {n_parents} parents + {n_children} children")
+    return n_children
 
+
+# ---------------------------------------------------------------------------
+# Private: flat-chunk fallback
+# ---------------------------------------------------------------------------
+
+def _ingest_flat(doc, parsed_doc: ParsedDocument, metadata: dict) -> int:
+    chunks: list[Union[Chunk, ListItem]] = chunk_document(
+        parsed_doc.pages, chunk_size=150, overlap=30
+    )
+    if not chunks:
+        print(f"[PIPELINE] doc_id={doc.id}: no chunks — skipping")
+        return 0
+
+    list_count  = sum(1 for c in chunks if isinstance(c, ListItem))
+    prose_count = sum(1 for c in chunks if isinstance(c, Chunk))
+    print(f"[PIPELINE] doc_id={doc.id}: flat path — "
+          f"{list_count} list items + {prose_count} prose chunks before dedup")
+
+    # Dedup by text
+    seen: set[str] = set()
+    chunks = [c for c in chunks if (k := c.text.strip().lower()) not in seen and not seen.add(k)]  # type: ignore
+    print(f"[PIPELINE] doc_id={doc.id}: {len(chunks)} after dedup")
+
+    # Save to Postgres
+    _save_chunks_to_db(
+        doc_id=doc.id,
+        chunks=chunks,
+        metadata=metadata,
+        section_field=lambda c: c.section if isinstance(c, ListItem) else "",
+    )
+
+    # Embed + index
+    embeddings = get_embeddings([c.text for c in chunks])
+    if not embeddings or len(embeddings) != len(chunks):
+        print(f"[PIPELINE] doc_id={doc.id}: embedding mismatch — aborting")
+        return 0
+
+    try:
+        delete_doc_chunks(doc.id)
+    except Exception as e:
+        print(f"[PIPELINE] doc_id={doc.id}: ES delete warning — {e}")
+
+    count = index_chunks(doc.id, chunks, embeddings, metadata)
+    print(f"[PIPELINE] doc_id={doc.id}: indexed {count}/{len(chunks)} flat chunks")
     return count
 
 
 # ---------------------------------------------------------------------------
-# V2 PIPELINE — parent-child structured ingestion
+# Private: acquire ParsedDocument
 # ---------------------------------------------------------------------------
 
-def ingest_document_v2(doc, parsed_doc: "ParsedDocument | None" = None) -> int:
+def _acquire_parsed_doc(doc) -> ParsedDocument | None:
     """
-    Parent-child ingestion pipeline (new format, co-exists with v1).
-
-    Uses the same preprocessing steps as ingest_document() but replaces
-    the flat sliding-window chunking with structured parent-child chunking
-    driven by H2 headings from the Markdown output of md_parser.
-
-    Steps
-    -----
-    1.  Build / obtain ParsedDocument (same as v1 — downloads from MinIO, runs md_parser)
-    2.  OCR cleaning + generic text cleaning (same as v1)
-    3.  Extract metadata (same as v1, includes doc_title)
-    4.  markdown_to_sections() → [(title, heading, body)]
-    5.  chunk_into_parent_child() → (ParentChunk[], ChildChunk[])
-    6.  Embed ONLY child chunks
-    7.  Delete old ES docs for this doc_id
-    8.  index_parent_child() → bulk-index parents + children
-
-    Returns
-    -------
-    Number of child chunks indexed.
+    Download from MinIO (→ md_parser cascade) or use stored OCR text.
+    Returns None if nothing is available.
     """
-    print(f"[PIPELINE-V2] Ingesting doc_id={doc.id}")
+    ocr_fallback = (doc.corrected_text or doc.ocr_text or "").strip()
+    is_pdf = (
+        (doc.file_type or "").lower() in ("application/pdf", "pdf")
+        or (doc.file_name or "").lower().endswith(".pdf")
+    )
 
-    # ── Steps 1-3: same as v1 ──────────────────────────────────────────────
-    if parsed_doc is None:
-        local_pdf_path = None
-        ocr_fallback   = (doc.corrected_text or doc.ocr_text or "").strip()
-        is_pdf = (doc.file_type or "").lower() in ("application/pdf", "pdf") \
-                 or (doc.file_name or "").lower().endswith(".pdf")
-
-        if is_pdf and doc.minio_path:
+    # Try to download original PDF and run md_parser
+    if is_pdf and doc.minio_path:
+        tmp = os.path.join(tempfile.gettempdir(), f"pipeline_{doc.id}_{doc.file_name}")
+        try:
+            from app.services.minio_service import download_file
+            download_file(doc.minio_path, tmp)
+            parsed = _parse_pdf(tmp, ocr_text=ocr_fallback)
+            return parsed
+        except Exception as e:
+            print(f"[PIPELINE] doc_id={doc.id}: MinIO/parse failed ({e}) — using stored text")
+        finally:
             try:
-                from app.services.minio_service import download_file
-                import tempfile, os
-                tmp = os.path.join(tempfile.gettempdir(), f"v2_{doc.id}_{doc.file_name}")
-                download_file(doc.minio_path, tmp)
-                local_pdf_path = tmp
-            except Exception as e:
-                print(f"[PIPELINE-V2] MinIO download failed ({e}) — using stored text")
-
-        if local_pdf_path:
-            parsed_doc = _parse_pdf(local_pdf_path, ocr_text=ocr_fallback)
-            try:
-                import os
-                os.remove(local_pdf_path)
+                os.remove(tmp)
             except Exception:
                 pass
-        elif ocr_fallback:
-            page_texts = [t.strip() for t in re.split(r"\n{2,}", ocr_fallback) if t.strip()]
-            parsed_doc = ParsedDocument(
-                pages=[ParsedPage(page_number=i + 1, text=t) for i, t in enumerate(page_texts)],
-                file_type=doc.file_type or "",
-            )
-        else:
-            print(f"[PIPELINE-V2] doc_id={doc.id}: no content — skipping")
-            return 0
 
-    # Apply OCR and generic cleaning (identical to v1)
-    for page in parsed_doc.pages:
-        page.text = apply_ocr_pipeline(page.text)
-    for page in parsed_doc.pages:
-        page.text = clean_text(page.text)
-    parsed_doc.pages = [p for p in parsed_doc.pages if p.text.strip()]
+    # Fall back to stored OCR text
+    if ocr_fallback:
+        page_texts = [t.strip() for t in re.split(r"\n{2,}", ocr_fallback) if t.strip()]
+        return ParsedDocument(
+            pages=[ParsedPage(page_number=i + 1, text=t) for i, t in enumerate(page_texts)],
+            file_type=doc.file_type or "",
+        )
 
-    if not parsed_doc.pages:
-        print(f"[PIPELINE-V2] doc_id={doc.id}: empty after cleaning — skipping")
-        return 0
+    print(f"[PIPELINE] doc_id={doc.id}: no PDF and no stored text — skipping")
+    return None
 
-    metadata = extract_metadata(doc, parsed_doc)
 
-    # ── Step 4: Get sections from Markdown ────────────────────────────────
-    from app.rag.ingestion.md_parser import markdown_to_sections
-    from app.rag.ingestion.chunker   import chunk_into_parent_child
-    from app.rag.ingestion.indexer   import index_parent_child
-    from app.rag.vector_store.elastic_store import delete_doc_chunks
+# ---------------------------------------------------------------------------
+# Private: Postgres save (shared by both paths)
+# ---------------------------------------------------------------------------
 
-    md_text  = parsed_doc.full_text           # joined page texts (Markdown from md_parser)
-    sections = markdown_to_sections(md_text)  # → [(title, heading, body)]
+def _save_chunks_to_db(doc_id: int, chunks, metadata: dict, section_field) -> None:
+    """Save chunk/child texts to document_chunks table for admin review."""
+    from app.models.document_chunks import DocumentChunk
+    from app.core.database import SessionLocal
 
-    if not sections:
-        print(f"[PIPELINE-V2] doc_id={doc.id}: no sections detected — falling back to v1")
-        return ingest_document(doc, parsed_doc)
-
-    print(f"[PIPELINE-V2] doc_id={doc.id}: {len(sections)} sections detected")
-
-    # ── Step 5: Parent-child chunking ─────────────────────────────────────
-    parents, children = chunk_into_parent_child(sections, doc_id=doc.id)
-    print(f"[PIPELINE-V2] doc_id={doc.id}: {len(parents)} parents, {len(children)} children")
-
-    if not children:
-        print(f"[PIPELINE-V2] doc_id={doc.id}: no children generated — falling back to v1")
-        return ingest_document(doc, parsed_doc)
-
-    # ── Step 6: Embed children only ───────────────────────────────────────
-    child_texts = [c.text for c in children]
-    print(f"[PIPELINE-V2] doc_id={doc.id}: embedding {len(child_texts)} children…")
-    child_embeddings = get_embeddings(child_texts)
-
-    if not child_embeddings or len(child_embeddings) != len(children):
-        print(f"[PIPELINE-V2] doc_id={doc.id}: embedding mismatch — skipping")
-        return 0
-
-    # ── Step 7: Delete old ES docs ────────────────────────────────────────
+    db = SessionLocal()
     try:
-        delete_doc_chunks(doc.id)
+        db.query(DocumentChunk).filter(DocumentChunk.document_id == doc_id).delete()
+        for c in chunks:
+            db.add(DocumentChunk(
+                document_id = doc_id,
+                chunk_text  = c.text,
+                page        = c.page_number,
+                section     = metadata.get("section") or section_field(c),
+                chunk_index = c.chunk_index,
+                total_chunks= getattr(c, "total_chunks", 0),
+                heading     = c.heading,
+                char_offset = getattr(c, "char_offset", 0),
+            ))
+        db.commit()
+        print(f"[PIPELINE] doc_id={doc_id}: saved {len(chunks)} rows to document_chunks")
     except Exception as e:
-        print(f"[PIPELINE-V2] doc_id={doc.id}: ES delete warning — {e}")
-
-    # ── Step 8: Index parents + children ──────────────────────────────────
-    n_parents, n_children = index_parent_child(
-        doc.id, parents, children, child_embeddings, metadata
-    )
-    print(f"[PIPELINE-V2] doc_id={doc.id}: done ✅  "
-          f"{n_parents} parents + {n_children} children")
-    return n_children
+        db.rollback()
+        print(f"[PIPELINE] doc_id={doc_id}: DB save failed — {e}")
+        raise
+    finally:
+        db.close()

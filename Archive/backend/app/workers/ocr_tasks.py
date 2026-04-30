@@ -33,6 +33,28 @@ def _ext(fn: str) -> str:
 # Task 1: Full document ingestion (download → OCR/parse → RAG ingest)
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _check_ram_guard() -> bool:
+    """
+    Return True if RAM usage is below the configured threshold.
+    If False, the task should be re-queued rather than run now.
+    """
+    try:
+        from app.rag.hw_config import WORKER_MAX_RAM_MB
+        if WORKER_MAX_RAM_MB <= 0:
+            return True
+        import psutil, os
+        proc = psutil.Process(os.getpid())
+        rss_mb = proc.memory_info().rss / (1024 * 1024)
+        if rss_mb > WORKER_MAX_RAM_MB:
+            print(f"[WORKER] RAM guard: {rss_mb:.0f} MB > {WORKER_MAX_RAM_MB} MB — deferring task")
+            return False
+    except ImportError:
+        pass  # psutil not installed — skip guard
+    except Exception as e:
+        print(f"[WORKER] RAM check error: {e}")
+    return True
+
+
 @celery_app.task(
     bind=True,
     autoretry_for=(Exception,),
@@ -41,7 +63,17 @@ def _ext(fn: str) -> str:
     name="workers.process_document",
 )
 def process_document(self, doc_id: int) -> dict:
+    from app.rag.hw_config import WORKER_INTER_DOC_DELAY_S
     print(f"[WORKER] process_document doc_id={doc_id}")
+
+    # RAM guard: defer if too much memory in use
+    if not _check_ram_guard():
+        raise self.retry(countdown=30)
+
+    # Inter-document delay: gives GPU/RAM time to recover from previous task
+    if WORKER_INTER_DOC_DELAY_S > 0:
+        print(f"[WORKER] Inter-doc delay {WORKER_INTER_DOC_DELAY_S}s…")
+        time.sleep(WORKER_INTER_DOC_DELAY_S)
     db = SessionLocal()
     try:
         doc = db.get(Document, doc_id)

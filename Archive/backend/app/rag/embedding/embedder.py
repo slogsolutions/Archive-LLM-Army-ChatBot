@@ -32,10 +32,13 @@ def get_model():
         if not model_path.exists():
             raise RuntimeError(f"❌ Embedding model not found at: {model_path}")
 
+        from app.rag.hw_config import EMBEDDING_DEVICE
+        print(f"📂 Device     : {EMBEDDING_DEVICE.upper()}")
+
         import time
         t0 = time.time()
-        _model = SentenceTransformer(str(model_path))
-        print(f"✅ Model loaded in {time.time() - t0:.2f}s")
+        _model = SentenceTransformer(str(model_path), device=EMBEDDING_DEVICE)
+        print(f"✅ Model loaded in {time.time() - t0:.2f}s  (device={EMBEDDING_DEVICE})")
 
     return _model
 
@@ -77,9 +80,10 @@ def get_embeddings(texts: List[str] | str) -> List[List[float]]:
     if uncached_texts:
         model = get_model()
         print(f"🧠 Encoding {len(uncached_texts)} text(s)…")
+        from app.rag.hw_config import EMBEDDING_BATCH
         raw = model.encode(
             uncached_texts,
-            batch_size=32,
+            batch_size=EMBEDDING_BATCH,
             normalize_embeddings=True,
             show_progress_bar=len(uncached_texts) > 10,
         )

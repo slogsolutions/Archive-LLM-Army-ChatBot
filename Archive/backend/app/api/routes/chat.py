@@ -156,7 +156,7 @@ def _build_stream(
 
     print(f"[STREAM] {len(results)} chunks retrieved")
 
-    context       = build_context(results, query)
+    context = build_context(results, query)
     system_prompt = build_system_prompt(results=results, intent=intent)
     base_prompt   = build_user_prompt(query=query, context=context)
 

@@ -45,6 +45,15 @@ def build_context(results: List["SearchResult"], query: str = "") -> str:  # noq
     return _format_prose_context(results)
 
 
+def build_parent_child_context(results: List["SearchResult"], _query: str = "") -> str:
+    """
+    Same as build_context — parent-child aware formatting is handled at
+    index time (children already have heading prepended). Falls through to
+    the standard formatters.
+    """
+    return build_context(results, _query)
+
+
 def get_source_summary(results: List["SearchResult"]) -> List[dict]:
     """
     Return a deduplicated list of source metadata dicts for the API response.

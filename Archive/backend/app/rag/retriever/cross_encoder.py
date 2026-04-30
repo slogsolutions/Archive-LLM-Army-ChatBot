@@ -49,9 +49,10 @@ def _get_model():
 
     try:
         from sentence_transformers import CrossEncoder
+        from app.rag.hw_config import RERANKER_DEVICE
         t0 = time.time()
-        print(f"[CROSS-ENCODER] Loading from {MODEL_PATH}…")
-        _model = CrossEncoder(str(MODEL_PATH), max_length=512)
+        print(f"[CROSS-ENCODER] Loading from {MODEL_PATH}  device={RERANKER_DEVICE.upper()}…")
+        _model = CrossEncoder(str(MODEL_PATH), max_length=512, device=RERANKER_DEVICE)
         _model_available = True
         print(f"[CROSS-ENCODER] Ready in {time.time() - t0:.2f}s")
         return _model

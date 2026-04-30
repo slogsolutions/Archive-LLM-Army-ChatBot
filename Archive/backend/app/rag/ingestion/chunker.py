@@ -425,16 +425,24 @@ def chunk_into_parent_child(
     parents:  list[ParentChunk]  = []
     children: list[ChildChunk]   = []
 
-    for section_idx, (doc_title, heading, body) in enumerate(sections):
+    for section_idx, section in enumerate(sections):
+        # Accept both 3-tuple (legacy) and 4-tuple (new: includes page_start)
+        if len(section) == 4:
+            doc_title, heading, body, page_start_hint = section
+        else:
+            doc_title, heading, body = section
+            page_start_hint = section_idx + 1
+
         if not body.strip():
             continue
 
         effective_heading = heading or doc_title or f"Section {section_idx + 1}"
 
-        # ── Estimate page range from body (heuristic: look for page markers) ──
-        page_nums = [int(m) for m in _re.findall(r"\[?[Pp]age[. ]+(\d+)\]?", body)]
-        page_start = page_nums[0]  if page_nums else (section_idx + 1)
-        page_end   = page_nums[-1] if page_nums else page_start
+        # ── Page number: prefer the hint from markdown_to_sections ───────────
+        # Also search body for explicit [Page N] markers or bare standalone nums
+        explicit = [int(m) for m in _re.findall(r"\[?[Pp]age[. ]+(\d+)\]?", body)]
+        page_start = explicit[0]  if explicit else page_start_hint
+        page_end   = explicit[-1] if explicit else page_start
 
         parent_id = f"P_{doc_id}_{section_idx}"
 

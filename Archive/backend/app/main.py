@@ -28,6 +28,9 @@ app = FastAPI(title="Army Archive System")
 @app.on_event("startup")
 async def warm_embedder():
     import asyncio
+    from app.rag.hw_config import print_summary
+    print_summary()
+
     loop = asyncio.get_event_loop()
     from app.rag.embedding.embedder import get_model
     print("[STARTUP] Pre-loading embedding model…")
